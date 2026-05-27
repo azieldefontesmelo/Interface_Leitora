@@ -1,1 +1,4 @@
 /Interface_Leitora/Codigos_AZ/
+Interface_Leitora/.venv/
+__pycache__/
+*.py[cod]
