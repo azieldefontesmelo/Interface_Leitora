@@ -1,4 +1,5 @@
 import serial
+from pathlib import Path
 from kivy.app import App
 from kivy.clock import Clock
 from kivy.lang import Builder
@@ -13,6 +14,8 @@ import time
 agora = datetime.now().strftime("%d/%m/%Y %H:%M:%S")
 
 BAUD_RATE = 115200
+BASE_DIR = Path(__file__).resolve().parent
+TESTES_DIR = BASE_DIR / "assets" / "testes"
 
 COMANDOS_SUDO = {
     "leitura": "#S1%SC1001&",
@@ -75,6 +78,8 @@ class MainScreen(Screen):
 
     def iniciar_log(self):
 
+        TESTES_DIR.mkdir(parents=True, exist_ok=True)
+
         nome_arquivo = self.ids.nome_arquivo_input.text.strip()
 
         if not nome_arquivo:
@@ -84,10 +89,12 @@ class MainScreen(Screen):
         if not nome_arquivo.endswith(".txt"):
             nome_arquivo += ".txt"
 
-        try:
-            self.log_arquivo = open(nome_arquivo, "a", encoding="utf-8")
+        caminho_arquivo = TESTES_DIR / nome_arquivo
 
-            self.atualizar_status(f"Log iniciado em {nome_arquivo}")
+        try:
+            self.log_arquivo = open(caminho_arquivo, "a", encoding="utf-8")
+
+            self.atualizar_status(f"Log iniciado em {caminho_arquivo}")
 
             self.salvar_log(agora)
             self.salvar_log(nome_arquivo)
