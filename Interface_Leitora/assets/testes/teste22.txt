@@ -1,9 +1,7 @@
-oi luan isso aqui foi atualizado
-
-27/05/2026 12:34:51
-test1L.txt
-Soma:
-Dose:
+27/05/2026 14:14:04
+teste22.txt
+Soma: 0
+Dose: -60.0
 0.1 0
 0.2 0
 0.3 0

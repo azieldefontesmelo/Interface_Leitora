@@ -122,10 +122,10 @@ class MainScreen(Screen):
             linhas.append("\n")
 
         dose = (
-            (self.soma - self.branco) # self branco de 0 a 1000000
-            * self.ecc  # 0 a 10
-            * self.fcal # 0 a 10
-            * self.fenerg # 0 a 10
+            (self.soma - float(self.ids.branco_textInput.text)) # self branco de 0 a 1000000
+            * float(self.ids.ecc_textInput.text)  # 0 a 10
+            * float(self.ids.fcal_textInput.text) # 0 a 10
+            * float(self.ids.fenerg_textInput.text) # 0 a 10
         )
 
         linhas[2] = f"Soma: {self.soma}\n"

@@ -1,7 +1,5 @@
-oi luan isso aqui foi atualizado
-
-27/05/2026 12:34:51
-test1L.txt
+27/05/2026 14:10:46
+teste21.txt
 Soma:
 Dose:
 0.1 0
