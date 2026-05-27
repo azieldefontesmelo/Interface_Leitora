@@ -3,4 +3,4 @@ Interface_Leitora/.venv/
 .vscode/
 __pycache__/
 *.py[cod]
-Interface_Leitora/venv/
+/Interface_Leitora/venv/
