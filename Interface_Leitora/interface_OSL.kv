@@ -1,0 +1,180 @@
+#:kivy 1.11.1
+
+ScreenManager:
+    MainScreen:
+    ParametrosScreen:
+
+
+<MainScreen>:
+    name: "main"
+
+    BoxLayout:
+        orientation: "horizontal"
+        padding: 12
+        spacing: 12
+
+        BoxLayout:
+            orientation: "vertical"
+            padding: 12
+            spacing: 12
+
+            Label:
+                text: "Interface OSL"
+                size_hint_y: None
+                height: 44
+                font_size: "24sp"
+                bold: True
+
+            BoxLayout:
+                size_hint_y: None
+                height: "40dp"
+
+                TextInput:
+                    id: nome_arquivo_input
+                    hint_text: "Nome do arquivo"
+
+                Button:
+                    id: botao_log
+                    text: "Iniciar Log"
+                    on_release: app.root.get_screen("main").func_botao_log()
+
+            GridLayout:
+
+
+
+                cols: 2
+                size_hint_y: None
+                height: 120
+                spacing: 8
+
+                Button:
+                    text: "SUDO leitura"
+                    on_release: app.root.get_screen("main").botao_leitura()
+
+                Button:
+                    text: "SUDO stop"
+                    on_release: app.root.get_screen("main").enviar_comando_sudo("stop")
+
+                Button:
+                    text: "SUDO zerar"
+                    on_release: app.root.get_screen("main").enviar_comando_sudo("zerar")
+
+                Button:
+                    text: "SUDO ligaLed"
+                    on_release: app.root.get_screen("main").enviar_comando_sudo("liga_led")
+
+            Label:
+                id: status_label
+                text: "Conectando serial..."
+                size_hint_y: None
+                height: 40
+                text_size: self.size
+                halign: "left"
+                valign: "middle"
+
+            Label:
+                id: recebido_label
+                text: "Recebido: ---"
+                text_size: self.size
+                halign: "left"
+                valign: "top"
+
+        HoverButton:
+            text: ""
+            size_hint_x: None
+            width: "45dp"
+
+            font_size: "22sp"
+            bold: True
+
+            background_normal: "seta_direita.png"
+            background_color: 0.18, 0.18, 0.18, 1
+
+            color: 1, 1, 1, 1
+
+            on_release: app.root.current = "parametros"
+
+<ParametrosScreen>:
+    name: "parametros"
+
+    BoxLayout:
+        orientation: "vertical"
+        padding: 12
+        spacing: 12
+
+        Label:
+            text: "Parametros"
+            size_hint_y: None
+            height: 40
+            font_size: "22sp"
+            bold: True
+
+        GridLayout:
+            cols: 2
+            spacing: 8
+            row_default_height: 42
+            row_force_default: True
+            size_hint_y: None
+            height: self.minimum_height
+
+            Label:
+                text: "M modo"
+            TextInput:
+                id: modo_input
+                text: "1"
+                multiline: False
+                input_filter: "int"
+
+            Label:
+                text: "G ganho"
+            TextInput:
+                id: ganho_input
+                text: "3"
+                multiline: False
+                input_filter: "int"
+
+            Label:
+                text: "L tempo leitura"
+            TextInput:
+                id: tempo_leitura_input
+                text: "03000"
+                multiline: False
+                input_filter: "int"
+
+            Label:
+                text: "P potencia"
+            TextInput:
+                id: potencia_input
+                text: "4"
+                multiline: False
+                input_filter: "int"
+
+            Label:
+                text: "Z tempo zeramento"
+            TextInput:
+                id: tempo_zeramento_input
+                text: "05000"
+                multiline: False
+                input_filter: "int"
+
+            Label:
+                text: "Q potencia zeramento"
+            TextInput:
+                id: potencia_zeramento_input
+                text: "2"
+                multiline: False
+                input_filter: "int"
+
+        Button:
+            text: "Enviar parametros"
+            size_hint_y: None
+            height: 48
+            on_release: app.root.get_screen("main").enviar_parametros()
+
+        Button:
+            text: "Voltar"
+            size_hint_y: None
+            height: 48
+            on_release: app.root.current = "main"
+
+        Widget:
