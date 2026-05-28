@@ -1,4 +1,5 @@
 #:kivy 1.11.1
+#:import dp kivy.metrics.dp
 
 ScreenManager:
     MainScreen:
@@ -162,10 +163,18 @@ ScreenManager:
             font_size: "22sp"
             bold: True
 
-            background_normal: "assets/UI/seta_direita.png"
+            background_normal: ""
+            background_down: ""
             background_color: 0.18, 0.18, 0.18, 1
 
             color: 1, 1, 1, 1
+            canvas.after:
+                Color:
+                    rgba: 1, 1, 1, 1
+                Rectangle:
+                    source: "assets/UI/angulo-direito-branco.png"
+                    size: dp(18), dp(18)
+                    pos: self.center_x - dp(9), self.center_y - dp(9)
 
             on_release: app.root.current = "parametros"
 

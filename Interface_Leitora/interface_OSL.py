@@ -78,7 +78,15 @@ class MainScreen(Screen):
 
     def iniciar_log(self):
 
-        TESTES_DIR.mkdir(parents=True, exist_ok=True)
+        data_atual = datetime.now()
+        testes_dia_dir = (
+            TESTES_DIR
+            / data_atual.strftime("%Y")
+            / data_atual.strftime("%m")
+            / data_atual.strftime("%d")
+        )
+
+        testes_dia_dir.mkdir(parents=True, exist_ok=True)
 
         nome_arquivo = self.ids.nome_arquivo_input.text.strip()
 
@@ -89,7 +97,7 @@ class MainScreen(Screen):
         if not nome_arquivo.endswith(".txt"):
             nome_arquivo += ".txt"
 
-        caminho_arquivo = TESTES_DIR / nome_arquivo
+        caminho_arquivo = testes_dia_dir / nome_arquivo
 
         try:
             self.log_arquivo = open(caminho_arquivo, "a", encoding="utf-8")
