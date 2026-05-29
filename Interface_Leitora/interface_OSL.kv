@@ -2,11 +2,11 @@
 #:import dp kivy.metrics.dp
 
 ScreenManager:
-    MainScreen:
-    ParametrosScreen:
+    TelaPrincipalLeitora:
+    TelaParametrosLeitura:
 
 
-<MainScreen>:
+<TelaPrincipalLeitora>:
     name: "main"
 
     BoxLayout:
@@ -178,7 +178,7 @@ ScreenManager:
                 halign: "left"
                 valign: "top"
 
-        HoverButton:
+        BotaoNavegacaoParametros:
             text: ""
             size_hint_x: None
             width: "45dp"
@@ -201,7 +201,7 @@ ScreenManager:
 
             on_release: app.root.current = "parametros"
 
-<ParametrosScreen>:
+<TelaParametrosLeitura>:
     name: "parametros"
 
     BoxLayout:
