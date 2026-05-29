@@ -11,24 +11,24 @@ ScreenManager:
 
     BoxLayout:
         orientation: "horizontal"
-        padding: 12
-        spacing: 12
+        padding: 2
+        spacing: 2
 
         BoxLayout:
             orientation: "vertical"
-            padding: 12
-            spacing: 12
+            padding: 8
+            spacing: 8
 
             Label:
                 text: "Interface OSL"
                 size_hint_y: None
-                height: 44
-                font_size: "24sp"
+                height: 34
+                font_size: "22sp"
                 bold: True
 
             BoxLayout:
                 size_hint_y: None
-                height: "40dp"
+                height: "36dp"
                 spacing: 8
 
                 Spinner:
@@ -51,7 +51,7 @@ ScreenManager:
 
             BoxLayout:
                 size_hint_y: None
-                height: "40dp"
+                height: "36dp"
 
                 TextInput:
                     id: nome_arquivo_input
@@ -64,7 +64,7 @@ ScreenManager:
 
             BoxLayout:
                 size_hint_y: None
-                height: "40dp"
+                height: "36dp"
 
                 Label:
                     text: "ecc"
@@ -79,7 +79,7 @@ ScreenManager:
 
             BoxLayout:
                 size_hint_y: None
-                height: "40dp"
+                height: "36dp"
 
                 Label:
                     text: "rcf"
@@ -94,7 +94,7 @@ ScreenManager:
 
             BoxLayout:
                 size_hint_y: None
-                height: "40dp"
+                height: "36dp"
 
                 Label:
                     text: "branco"
@@ -109,7 +109,7 @@ ScreenManager:
 
             BoxLayout:
                 size_hint_y: None
-                height: "40dp"
+                height: "36dp"
 
                 Label:
                     text: "fcal"
@@ -124,7 +124,7 @@ ScreenManager:
 
             BoxLayout:
                 size_hint_y: None
-                height: "40dp"
+                height: "36dp"
 
                 Label:
                     text: "fenerg"
@@ -143,7 +143,7 @@ ScreenManager:
 
                 cols: 2
                 size_hint_y: None
-                height: 120
+                height: 108
                 spacing: 8
 
                 Button:
@@ -166,7 +166,7 @@ ScreenManager:
                 id: status_label
                 text: "Conectando serial..."
                 size_hint_y: None
-                height: 40
+                height: 32
                 text_size: self.size
                 halign: "left"
                 valign: "middle"

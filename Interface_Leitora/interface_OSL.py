@@ -50,7 +50,6 @@ class HoverButton(Button):
         else:
             self.background_color = (0.18, 0.18, 0.18, 1)
 
-
 class MainScreen(Screen):
 
     soma = 0
@@ -361,14 +360,6 @@ class MainScreen(Screen):
         return False
 
 
-class ParametrosScreen(Screen):
-    pass
-
-
-class GerenciadorTelas(ScreenManager):
-    pass
-
-
 class InterfaceOSLApp(App):
 
     def build(self):
@@ -388,5 +379,4 @@ class InterfaceOSLApp(App):
                 main.serial_connection.close()
 
 
-if __name__ == "__main__":
-    InterfaceOSLApp().run()
+InterfaceOSLApp().run()
