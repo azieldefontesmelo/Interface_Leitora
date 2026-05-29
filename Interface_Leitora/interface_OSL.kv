@@ -29,6 +29,29 @@ ScreenManager:
             BoxLayout:
                 size_hint_y: None
                 height: "40dp"
+                spacing: 8
+
+                Spinner:
+                    id: porta_spinner
+                    text: "Porta"
+                    values: []
+
+                Button:
+                    text: "Atualizar"
+                    size_hint_x: None
+                    width: "100dp"
+                    on_release: app.root.get_screen("main").atualizar_portas_serial()
+
+                Button:
+                    id: botao_conexao_serial
+                    text: "Conectar"
+                    size_hint_x: None
+                    width: "110dp"
+                    on_release: app.root.get_screen("main").func_botao_conexao_serial()
+
+            BoxLayout:
+                size_hint_y: None
+                height: "40dp"
 
                 TextInput:
                     id: nome_arquivo_input
