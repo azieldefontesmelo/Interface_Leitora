@@ -2,7 +2,7 @@
 test6.txt
 Soma: 0
 Dose: -1.0
-0.1 0
+0.1 iled v_fotodiodo 0
 0.2 0
 0.3 0
 0.4 0
