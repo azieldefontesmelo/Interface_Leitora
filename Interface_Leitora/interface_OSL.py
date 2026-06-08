@@ -93,6 +93,7 @@ class TelaPrincipalLeitora(Screen):
                 nome_arquivo,
                 "Soma:",
                 "Dose:",
+                "Tempo\tContagens\tCorrente\tDens_Pot",
             ):
                 self.salvar_log(linha)
 
@@ -240,6 +241,10 @@ class TelaPrincipalLeitora(Screen):
 
         if frame.startswith("#L1%A"):
             self.registrar_valor(frame, 0.1)
+        elif frame.startswith("#L1%E"):
+            self.registrar_valor(frame, 0.1)
+        elif frame.startswith("#L1%D"):
+            self.registrar_valor(frame, 0.1)            
         elif frame.startswith("#L1%B"):
             self.registrar_valor(frame, 0.001)
         elif frame == "#L1%I0000000":
@@ -247,9 +252,15 @@ class TelaPrincipalLeitora(Screen):
 
     def registrar_valor(self, frame, incremento):
         valor = int(frame[5:])
-        self.soma += valor
+        if frame[4] == "A":
+            self.soma += valor
+            fotomult = valor
+        elif frame[4] == "E":
+            corrente = valor
+        elif frame[4] == "D":
+            dens_pot = valor
         self.contador += incremento
-        self.salvar_log(f"{self.contador:.1f} {valor}")
+        self.salvar_log(f"{self.contador:.1f}\t{fotomult}\t{corrente}\t{dens_pot}")
 
     # Comandos
     def botao_leitura(self):
