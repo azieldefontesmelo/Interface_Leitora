@@ -94,7 +94,7 @@ class TelaPrincipalLeitora(Screen):
                 "Soma:",
                 "Dose:",
             ):
-                self.salvar_log(linha)
+                self.salvar_log(f"{linha} \n")
 
         except OSError as erro:
             self.atualizar_status(f"Erro ao criar arquivo: {erro}")
@@ -112,7 +112,7 @@ class TelaPrincipalLeitora(Screen):
 
     def salvar_log(self, mensagem):
         if self.log_arquivo:
-            self.log_arquivo.write(f"{mensagem}\n")
+            self.log_arquivo.write(f"{mensagem}")
             self.log_arquivo.flush()
 
     def atualizar_soma_no_log(self):
@@ -241,15 +241,28 @@ class TelaPrincipalLeitora(Screen):
         if frame.startswith("#L1%A"):
             self.registrar_valor(frame, 0.1)
         elif frame.startswith("#L1%B"):
-            self.registrar_valor(frame, 0.001)
+            self.registrar_valor(frame, 0.1)
+        elif frame.startswith("#L1%D"):
+            self.registrar_valor(frame, -1)
+        elif frame.startswith("#L1%E"):
+            self.registrar_valor(frame, 0)
+        elif frame.startswith("#L1%T"):
+            self.registrar_valor(frame, -2)
         elif frame == "#L1%I0000000":
             self.enviar_serial(COMANDO_PARAMETROS_PADRAO)
 
     def registrar_valor(self, frame, incremento):
         valor = int(frame[5:])
         self.soma += valor
-        self.contador += incremento
-        self.salvar_log(f"{self.contador:.1f} {valor}")
+        if incremento > 0:
+            self.salvar_log(f"{self.contador:.1f};{valor};")
+            self.contador += incremento
+        if incremento == 0:
+            self.salvar_log(f"{valor};")
+        if incremento == -1:
+            self.salvar_log(f"{valor} \n")
+        if incremento == -2:
+            self.salvar_log(f"{valor};")
 
     # Comandos
     def botao_leitura(self):
