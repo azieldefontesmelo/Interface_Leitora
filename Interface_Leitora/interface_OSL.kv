@@ -4,6 +4,7 @@
 ScreenManager:
     TelaPrincipalLeitora:
     TelaParametrosLeitura:
+    TelaGraficos:
 
 
 <TelaPrincipalLeitora>:
@@ -162,6 +163,12 @@ ScreenManager:
                     text: "SUDO ligaLed"
                     on_release: app.root.get_screen("main").enviar_comando_sudo("liga_led")
 
+            Button:
+                text: "Graficos"
+                size_hint_y: None
+                height: "36dp"
+                on_release: app.root.current = "graficos"
+
             Label:
                 id: status_label
                 text: "Conectando serial..."
@@ -285,3 +292,71 @@ ScreenManager:
             on_release: app.root.current = "main"
 
         Widget:
+
+
+<TelaGraficos>:
+    name: "graficos"
+
+    BoxLayout:
+        orientation: "horizontal"
+        padding: 8
+        spacing: 8
+
+        BoxLayout:
+            orientation: "vertical"
+            size_hint_x: 0.4
+            spacing: 8
+
+            Label:
+                text: "Arquivos de log"
+                size_hint_y: None
+                height: 30
+                bold: True
+
+            FileChooserListView:
+                id: seletor_arquivo
+                filters: ["*.txt", "*.csv"]
+                on_selection: app.root.get_screen("graficos").selecionar_arquivo(self.selection)
+
+        BoxLayout:
+            orientation: "vertical"
+            spacing: 8
+
+            Label:
+                text: "Grafico"
+                size_hint_y: None
+                height: 30
+                font_size: "22sp"
+                bold: True
+
+            Image:
+                id: imagem_grafico
+                source: ""
+
+            BoxLayout:
+                size_hint_y: None
+                height: "44dp"
+                spacing: 8
+
+                Button:
+                    text: "Gerar grafico"
+                    on_release: app.root.get_screen("graficos").gerar_grafico()
+
+                Button:
+                    text: "Exportar CSV"
+                    on_release: app.root.get_screen("graficos").exportar_csv()
+
+            Label:
+                id: status_grafico_label
+                text: "Selecione um arquivo de log."
+                size_hint_y: None
+                height: 32
+                text_size: self.size
+                halign: "left"
+                valign: "middle"
+
+            Button:
+                text: "Voltar"
+                size_hint_y: None
+                height: 44
+                on_release: app.root.current = "main"
