@@ -1,3 +1,4 @@
+import tempfile
 from datetime import datetime
 from pathlib import Path
 
@@ -10,6 +11,9 @@ from kivy.lang import Builder
 from kivy.properties import BooleanProperty
 from kivy.uix.button import Button
 from kivy.uix.screenmanager import Screen
+
+from conversor import escrever_csv
+from Plot_grafico import gerar_grafico
 
 
 BAUD_RATE = 115200
@@ -63,6 +67,7 @@ class TelaPrincipalLeitora(Screen):
         self.buffer_serial = ""
         self.log_arquivo = None
         self.leitura_evento = None
+        self.nova_linha = True
         Clock.schedule_once(self.atualizar_portas_serial, 0)
 
     # Log
@@ -88,11 +93,13 @@ class TelaPrincipalLeitora(Screen):
             self.atualizar_status(f"Log iniciado em {caminho_arquivo}")
             self.ids.botao_log.text = "Fechar Log"
 
+            self.nova_linha = True
             for linha in (
                 data_atual.strftime("%d/%m/%Y %H:%M:%S"),
                 nome_arquivo,
                 "Soma:",
                 "Dose:",
+                "Tempo;Leitura;Luz;Corrente",
             ):
                 self.salvar_log(f"{linha} \n")
 
@@ -238,36 +245,36 @@ class TelaPrincipalLeitora(Screen):
         self.ids.recebido_label.text = f"Recebido: {frame}&"
         print(f"RECEBIDO: {frame}&")
 
-        if frame.startswith("#L1%A"):
-            self.registrar_valor(frame, 0.1)
-        elif frame.startswith("#L1%B"):
-            self.registrar_valor(frame, 0.1)
-        elif frame.startswith("#L1%D"):
-            self.registrar_valor(frame, -1)
-        elif frame.startswith("#L1%E"):
-            self.registrar_valor(frame, 0)
-        elif frame.startswith("#L1%T"):
-            self.registrar_valor(frame, -2)
+        # O frame D fecha a amostra (ultima coluna); os demais sao colunas
+        # intermediarias. Cada linha comeca pelo Tempo (ver registrar_valor).
+        if frame.startswith("#L1%D"):
+            self.registrar_valor(frame, fim_linha=True)
+        elif frame[:5] in ("#L1%A", "#L1%B", "#L1%E", "#L1%T"):
+            self.registrar_valor(frame, fim_linha=False)
         elif frame == "#L1%I0000000":
             self.enviar_serial(COMANDO_PARAMETROS_PADRAO)
 
-    def registrar_valor(self, frame, incremento):
+    def registrar_valor(self, frame, fim_linha):
         valor = int(frame[5:])
         self.soma += valor
-        if incremento > 0:
-            self.salvar_log(f"{self.contador:.1f};{valor};")
-            self.contador += incremento
-        if incremento == 0:
-            self.salvar_log(f"{valor};")
-        if incremento == -1:
+
+        # Primeira coluna de cada linha: o Tempo (contador da amostra).
+        if self.nova_linha:
+            self.salvar_log(f"{self.contador:.1f};")
+            self.contador += 0.1
+            self.nova_linha = False
+
+        if fim_linha:
             self.salvar_log(f"{valor} \n")
-        if incremento == -2:
+            self.nova_linha = True
+        else:
             self.salvar_log(f"{valor};")
 
     # Comandos
     def botao_leitura(self):
         self.contador = 0
         self.soma = 0
+        self.nova_linha = True
         self.enviar_comando_sudo("leitura")
 
     def enviar_comando_sudo(self, nome_comando):
@@ -326,6 +333,58 @@ class TelaPrincipalLeitora(Screen):
 
 class TelaParametrosLeitura(Screen):
     pass
+
+
+class TelaGraficos(Screen):
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.arquivo_selecionado = None
+        self.png_grafico = Path(tempfile.gettempdir()) / "grafico_osl.png"
+
+    def on_pre_enter(self, *args):
+        self.ids.seletor_arquivo.path = str(TESTES_DIR)
+
+    def selecionar_arquivo(self, selecao):
+        if not selecao:
+            return
+        self.arquivo_selecionado = Path(selecao[0])
+        self.atualizar_status_grafico(
+            f"Selecionado: {self.arquivo_selecionado.name}"
+        )
+
+    def gerar_grafico(self):
+        if not self._tem_arquivo():
+            return
+        try:
+            caminho_csv, _ = gerar_grafico(
+                self.arquivo_selecionado, self.png_grafico
+            )
+            self.ids.imagem_grafico.source = str(self.png_grafico)
+            self.ids.imagem_grafico.reload()
+            self.atualizar_status_grafico(
+                f"Grafico gerado (csv: {caminho_csv.name})"
+            )
+        except (OSError, ValueError) as erro:
+            self.atualizar_status_grafico(f"Erro ao gerar grafico: {erro}")
+
+    def exportar_csv(self):
+        if not self._tem_arquivo():
+            return
+        try:
+            caminho_csv = escrever_csv(self.arquivo_selecionado)
+            self.atualizar_status_grafico(f"CSV salvo em {caminho_csv}")
+        except (OSError, ValueError) as erro:
+            self.atualizar_status_grafico(f"Erro ao exportar CSV: {erro}")
+
+    def _tem_arquivo(self):
+        if self.arquivo_selecionado:
+            return True
+        self.atualizar_status_grafico("Selecione um arquivo de log.")
+        return False
+
+    def atualizar_status_grafico(self, mensagem):
+        print(mensagem)
+        self.ids.status_grafico_label.text = mensagem
 
 
 class AplicativoInterfaceOSL(App):

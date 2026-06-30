@@ -4,3 +4,10 @@ Interface_Leitora/.venv/
 __pycache__/
 *.py[cod]
 /Interface_Leitora/venv/
+CLAUDE.md
+/DosimetroOSL/
+/simulador/
+
+# Artefatos gerados pelo conversor/plotador (regeneraveis a partir dos .txt)
+Interface_Leitora/assets/testes/**/*.csv
+Interface_Leitora/assets/testes/**/*.png
