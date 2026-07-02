@@ -55,7 +55,7 @@ class BotaoNavegacaoParametros(Button):
 
 class TelaPrincipalLeitora(Screen):
     soma = 0
-    contador = 0
+    contador = 0.1
     ecc = 1
     fcal = 0.0001
     fenerg = 1
@@ -272,7 +272,7 @@ class TelaPrincipalLeitora(Screen):
 
     # Comandos
     def botao_leitura(self):
-        self.contador = 0
+        self.contador = 0.1
         self.soma = 0
         self.nova_linha = True
         self.enviar_comando_sudo("leitura")
@@ -356,8 +356,12 @@ class TelaGraficos(Screen):
         if not self._tem_arquivo():
             return
         try:
+            gerar_grafico_leitura = self.ids.cb_leitura.active
+            gerar_grafico_corrente = self.ids.cb_corrente.active
+            gerar_grafico_luz = self.ids.cb_luz.active
+
             caminho_csv, _ = gerar_grafico(
-                self.arquivo_selecionado, self.png_grafico
+                self.arquivo_selecionado, self.png_grafico, None, gerar_grafico_leitura, gerar_grafico_corrente, gerar_grafico_luz
             )
             self.ids.imagem_grafico.source = str(self.png_grafico)
             self.ids.imagem_grafico.reload()
@@ -390,6 +394,10 @@ class TelaGraficos(Screen):
 class AplicativoInterfaceOSL(App):
     def build(self):
         return Builder.load_file("interface_OSL.kv")
+
+    def trocar_para_graficos(self):
+        self.root.transition.direction = "up"
+        self.root.current = "graficos"
 
     def on_stop(self):
         main = self.root.get_screen("main")
