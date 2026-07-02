@@ -167,7 +167,7 @@ ScreenManager:
                 text: "Graficos"
                 size_hint_y: None
                 height: "36dp"
-                on_release: app.root.current = "graficos"
+                on_release: app.trocar_para_graficos()
 
             Label:
                 id: status_label
@@ -328,6 +328,50 @@ ScreenManager:
                 height: 30
                 font_size: "22sp"
                 bold: True
+
+            BoxLayout:
+                orientation: "horizontal"
+                spacing: 5
+                size_hint_y: None
+                height: 45
+
+                CheckBox:
+                    id: cb_leitura
+                    active: True
+                    size_hint: None, None
+                    size: 30, 30
+
+                Label:
+                    text: "Mostrar Leitura"
+                    size_hint_x: None
+                    width: self.texture_size[0]
+
+                CheckBox:
+                    id: cb_corrente
+                    active: True
+                    size_hint: None, None
+                    size: 30, 30
+
+                Label:
+                    text: "Mostrar Corrente de Led"
+                    size_hint_x: None
+                    width: self.texture_size[0]
+
+                CheckBox:
+                    id: cb_luz
+                    active: True
+                    size_hint: None, None
+                    size: 30, 30
+
+                Label:
+                    text: "Mostrar Densidade de Potência"
+                    size_hint_x: None
+                    width: self.texture_size[0]
+
+            Label:
+                text: "Gráfico"
+                size_hint_y: None
+                height: 45   # controla o bloco inteiro
 
             Image:
                 id: imagem_grafico

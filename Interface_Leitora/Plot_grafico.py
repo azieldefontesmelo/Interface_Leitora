@@ -32,7 +32,7 @@ def ler_csv(caminho_csv):
     return nomes, vetores
 
 
-def plotar_csv(caminho_csv, caminho_png):
+def plotar_csv(caminho_csv, caminho_png, gerar_grafico_leitura=1, gerar_grafico_corrente=1, gerar_grafico_luz=1):
     """Le os vetores do CSV e salva o grafico em caminho_png.
 
     Eixo X = primeira coluna (tempo); demais colunas = curvas.
@@ -43,8 +43,16 @@ def plotar_csv(caminho_csv, caminho_png):
 
     if vetores and vetores[0]:
         tempo = vetores[0]
-        for nome, valores in zip(nomes[1:], vetores[1:]):
-            eixo.plot(tempo, valores, label=nome)
+
+        if gerar_grafico_leitura:
+            eixo.plot(tempo, vetores[1], label=nomes[1])
+
+        if gerar_grafico_corrente:
+            eixo.plot(tempo, vetores[2], label=nomes[2])
+
+        if gerar_grafico_luz:
+            eixo.plot(tempo, vetores[3], label=nomes[3])
+
         eixo.set_xlabel(nomes[0])
         eixo.legend()
     else:
@@ -64,13 +72,13 @@ def plotar_csv(caminho_csv, caminho_png):
     return Path(caminho_png)
 
 
-def gerar_grafico(caminho_txt, caminho_png, caminho_csv=None):
+def gerar_grafico(caminho_txt, caminho_png, caminho_csv=None, gerar_grafico_leitura=1, gerar_grafico_corrente=1, gerar_grafico_luz=1):
     """Fluxo completo: txt -> csv -> le csv -> vetores -> grafico.
 
     Devolve (caminho_csv, caminho_png).
     """
     caminho_csv = escrever_csv(caminho_txt, caminho_csv)
-    plotar_csv(caminho_csv, caminho_png)
+    plotar_csv(caminho_csv, caminho_png, gerar_grafico_leitura, gerar_grafico_corrente, gerar_grafico_luz)
     return caminho_csv, Path(caminho_png)
 
 
