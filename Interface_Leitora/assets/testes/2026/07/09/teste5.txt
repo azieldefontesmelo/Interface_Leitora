@@ -1,0 +1,12 @@
+09/07/2026 12:34:30 
+teste5.txt 
+Soma: 966
+Dose: 966.0
+Tempo;Leitura;Luz;Corrente 
+0.1;13;867;513 
+09/07/2026 12:34:52 
+teste5.txt 
+Soma: 
+Dose: 
+Tempo;Leitura;Luz;Corrente 
+0.1;14;438;514 

@@ -60,6 +60,8 @@ class TelaPrincipalLeitora(Screen):
     fcal = 0.0001
     fenerg = 1
     branco = 1
+    f_fechar_log = False
+    tempo_leitura = 3000
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
@@ -72,7 +74,8 @@ class TelaPrincipalLeitora(Screen):
 
     # Log
     def func_botao_log(self):
-        self.fechar_log() if self.log_arquivo else self.iniciar_log()
+        if not self.log_arquivo:
+            self.iniciar_log()
 
     def iniciar_log(self):
         nome_arquivo = self.ids.nome_arquivo_input.text.strip()
@@ -91,7 +94,6 @@ class TelaPrincipalLeitora(Screen):
             caminho_arquivo = testes_dia_dir / nome_arquivo
             self.log_arquivo = open(caminho_arquivo, "a", encoding="utf-8")
             self.atualizar_status(f"Log iniciado em {caminho_arquivo}")
-            self.ids.botao_log.text = "Fechar Log"
 
             self.nova_linha = True
             for linha in (
@@ -114,7 +116,6 @@ class TelaPrincipalLeitora(Screen):
         self.atualizar_soma_no_log()
         self.log_arquivo.close()
         self.log_arquivo = None
-        self.ids.botao_log.text = "Iniciar Log"
         self.atualizar_status(f"Log encerrado: {nome}")
 
     def salvar_log(self, mensagem):
@@ -143,10 +144,11 @@ class TelaPrincipalLeitora(Screen):
 
     def calcular_dose(self):
         return (
-            (self.soma - float(self.ids.branco_textInput.text))
-            * float(self.ids.ecc_textInput.text)
-            * float(self.ids.fcal_textInput.text)
-            * float(self.ids.fenerg_textInput.text)
+            (self.soma - float(self.ids.branco_textInput.text.replace(',', '.')))
+            * float(self.ids.rcf_textInput.text.replace(',', '.'))
+            * float(self.ids.ecc_textInput.text.replace(',', '.'))
+            * float(self.ids.fcal_textInput.text.replace(',', '.'))
+            * float(self.ids.fenerg_textInput.text.replace(',', '.'))
         )
 
     # Serial
@@ -186,7 +188,7 @@ class TelaPrincipalLeitora(Screen):
                 lambda dt: self.enviar_serial(COMANDO_INICIAL), 0.2
             )
 
-            self.ids.botao_conexao_serial.text = "Desconectar"
+            self.ids.botao_conexao_serial.text = "Disconnect"
             self.atualizar_status(f"Conectado em {porta} @ {BAUD_RATE}")
 
         except (OSError, serial.SerialException) as erro:
@@ -203,7 +205,7 @@ class TelaPrincipalLeitora(Screen):
         self.serial_connection = None
 
         if atualizar_botao:
-            self.ids.botao_conexao_serial.text = "Conectar"
+            self.ids.botao_conexao_serial.text = "Connect"
             self.atualizar_status("Serial desconectada.")
 
     def serial_aberta(self):
@@ -250,28 +252,40 @@ class TelaPrincipalLeitora(Screen):
         if frame.startswith("#L1%D"):
             self.registrar_valor(frame, fim_linha=True)
         elif frame[:5] in ("#L1%A", "#L1%B", "#L1%E", "#L1%T"):
+            if frame[:5] == "#L1%A":
+                valor = int(frame[5:])
+                self.soma += valor
             self.registrar_valor(frame, fim_linha=False)
         elif frame == "#L1%I0000000":
             self.enviar_serial(COMANDO_PARAMETROS_PADRAO)
 
     def registrar_valor(self, frame, fim_linha):
         valor = int(frame[5:])
-        self.soma += valor
 
         # Primeira coluna de cada linha: o Tempo (contador da amostra).
         if self.nova_linha:
             self.salvar_log(f"{self.contador:.1f};")
+
+            if self.contador > self.tempo_leitura/1000:
+                self.f_fechar_log = True
+
             self.contador += 0.1
+
             self.nova_linha = False
 
         if fim_linha:
             self.salvar_log(f"{valor} \n")
             self.nova_linha = True
+            if self.f_fechar_log:
+                self.fechar_log()
+                self.f_fechar_log = False
+
         else:
             self.salvar_log(f"{valor};")
 
     # Comandos
     def botao_leitura(self):
+        self.func_botao_log()
         self.contador = 0.1
         self.soma = 0
         self.nova_linha = True
@@ -285,6 +299,8 @@ class TelaPrincipalLeitora(Screen):
         modo = tela.ids.modo_input.text.strip()
         ganho = tela.ids.ganho_input.text.strip()
         tempo_leitura = tela.ids.tempo_leitura_input.text.strip()
+        self.tempo_leitura = tempo_leitura
+        print(self.tempo_leitura)
         potencia = tela.ids.potencia_input.text.strip()
         tempo_zeramento = tela.ids.tempo_zeramento_input.text.strip()
         potencia_zeramento = tela.ids.potencia_zeramento_input.text.strip()
@@ -392,6 +408,8 @@ class TelaGraficos(Screen):
 
 
 class AplicativoInterfaceOSL(App):
+    title = "OSLMeter V4.0"
+
     def build(self):
         return Builder.load_file("interface_OSL.kv")
 
