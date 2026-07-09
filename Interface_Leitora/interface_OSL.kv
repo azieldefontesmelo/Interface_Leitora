@@ -21,7 +21,7 @@ ScreenManager:
             spacing: 8
 
             Label:
-                text: "Interface OSL"
+                text: "OSL Reading"
                 size_hint_y: None
                 height: 34
                 font_size: "22sp"
@@ -34,18 +34,18 @@ ScreenManager:
 
                 Spinner:
                     id: porta_spinner
-                    text: "Porta"
+                    text: "COM Port"
                     values: []
 
                 Button:
-                    text: "Atualizar"
+                    text: "Refresh"
                     size_hint_x: None
                     width: "100dp"
                     on_release: app.root.get_screen("main").atualizar_portas_serial()
 
                 Button:
                     id: botao_conexao_serial
-                    text: "Conectar"
+                    text: "Connect"
                     size_hint_x: None
                     width: "110dp"
                     on_release: app.root.get_screen("main").func_botao_conexao_serial()
@@ -56,19 +56,14 @@ ScreenManager:
 
                 TextInput:
                     id: nome_arquivo_input
-                    hint_text: "Nome do arquivo"
-
-                Button:
-                    id: botao_log
-                    text: "Iniciar Log"
-                    on_release: app.root.get_screen("main").func_botao_log()
+                    hint_text: "File Name"
 
             BoxLayout:
                 size_hint_y: None
                 height: "36dp"
 
                 Label:
-                    text: "ecc"
+                    text: "ECC"
                     text_size: self.size
                     font_size: "18sp"
                     halign: "center"
@@ -76,14 +71,14 @@ ScreenManager:
 
                 TextInput:
                     id: ecc_textInput
-                    hint_text: "ecc"
+                    text: "1"
 
             BoxLayout:
                 size_hint_y: None
                 height: "36dp"
 
                 Label:
-                    text: "rcf"
+                    text: "RCF"
                     text_size: self.size
                     font_size: "18sp"
                     halign: "center"
@@ -91,29 +86,14 @@ ScreenManager:
 
                 TextInput:
                     id: rcf_textInput
-                    hint_text: "rcf"
+                    text: "1"
 
             BoxLayout:
                 size_hint_y: None
                 height: "36dp"
 
                 Label:
-                    text: "branco"
-                    text_size: self.size
-                    font_size: "18sp"
-                    halign: "center"
-                    valign: "middle"
-
-                TextInput:
-                    id: branco_textInput
-                    hint_text: "branco"
-
-            BoxLayout:
-                size_hint_y: None
-                height: "36dp"
-
-                Label:
-                    text: "fcal"
+                    text: "Fang"
                     text_size: self.size
                     font_size: "18sp"
                     halign: "center"
@@ -121,14 +101,14 @@ ScreenManager:
 
                 TextInput:
                     id: fcal_textInput
-                    hint_text: "fcal"
+                    text: "1"
 
             BoxLayout:
                 size_hint_y: None
                 height: "36dp"
 
                 Label:
-                    text: "fenerg"
+                    text: "Fenerg"
                     text_size: self.size
                     font_size: "18sp"
                     halign: "center"
@@ -136,7 +116,22 @@ ScreenManager:
 
                 TextInput:
                     id: fenerg_textInput
-                    hint_text: "fenerg"
+                    text: "1"
+
+            BoxLayout:
+                size_hint_y: None
+                height: "36dp"
+
+                Label:
+                    text: "Branco"
+                    text_size: self.size
+                    font_size: "18sp"
+                    halign: "center"
+                    valign: "middle"
+
+                TextInput:
+                    id: branco_textInput
+                    text: "0"
 
             GridLayout:
 
@@ -148,23 +143,23 @@ ScreenManager:
                 spacing: 8
 
                 Button:
-                    text: "SUDO leitura"
+                    text: "Start"
                     on_release: app.root.get_screen("main").botao_leitura()
 
                 Button:
-                    text: "SUDO stop"
+                    text: "Stop"
                     on_release: app.root.get_screen("main").enviar_comando_sudo("stop")
 
                 Button:
-                    text: "SUDO zerar"
+                    text: "Erase"
                     on_release: app.root.get_screen("main").enviar_comando_sudo("zerar")
 
                 Button:
-                    text: "SUDO ligaLed"
+                    text: "Ref Light"
                     on_release: app.root.get_screen("main").enviar_comando_sudo("liga_led")
 
             Button:
-                text: "Graficos"
+                text: "Results"
                 size_hint_y: None
                 height: "36dp"
                 on_release: app.trocar_para_graficos()
@@ -217,7 +212,7 @@ ScreenManager:
         spacing: 12
 
         Label:
-            text: "Parametros"
+            text: "Setup"
             size_hint_y: None
             height: 40
             font_size: "22sp"
@@ -232,7 +227,7 @@ ScreenManager:
             height: self.minimum_height
 
             Label:
-                text: "M modo"
+                text: "Stimulation Mode"
             TextInput:
                 id: modo_input
                 text: "1"
@@ -240,7 +235,7 @@ ScreenManager:
                 input_filter: "int"
 
             Label:
-                text: "G ganho"
+                text: "Photomultiplier Gain"
             TextInput:
                 id: ganho_input
                 text: "3"
@@ -248,7 +243,7 @@ ScreenManager:
                 input_filter: "int"
 
             Label:
-                text: "L tempo leitura"
+                text: "Reading Time"
             TextInput:
                 id: tempo_leitura_input
                 text: "03000"
@@ -256,7 +251,7 @@ ScreenManager:
                 input_filter: "int"
 
             Label:
-                text: "P potencia"
+                text: "Stimulation Intensity"
             TextInput:
                 id: potencia_input
                 text: "4"
@@ -264,7 +259,7 @@ ScreenManager:
                 input_filter: "int"
 
             Label:
-                text: "Z tempo zeramento"
+                text: "Erase Time"
             TextInput:
                 id: tempo_zeramento_input
                 text: "05000"
@@ -272,7 +267,7 @@ ScreenManager:
                 input_filter: "int"
 
             Label:
-                text: "Q potencia zeramento"
+                text: "Erase Intensity"
             TextInput:
                 id: potencia_zeramento_input
                 text: "2"
@@ -323,7 +318,7 @@ ScreenManager:
             spacing: 8
 
             Label:
-                text: "Grafico"
+                text: "Resultados"
                 size_hint_y: None
                 height: 30
                 font_size: "22sp"

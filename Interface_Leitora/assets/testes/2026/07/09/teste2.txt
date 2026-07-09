@@ -1,0 +1,6 @@
+09/07/2026 12:28:10 
+teste2.txt 
+Soma: 1401
+Dose: 1400.0
+Tempo;Leitura;Luz;Corrente 
+0.1;11;870;520 

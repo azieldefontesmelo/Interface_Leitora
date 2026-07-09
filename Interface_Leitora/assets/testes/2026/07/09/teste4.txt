@@ -1,0 +1,6 @@
+09/07/2026 12:32:27 
+teste4.txt 
+Soma: 1389
+Dose: 15279.0
+Tempo;Leitura;Luz;Corrente 
+0.1;8;867;514 
