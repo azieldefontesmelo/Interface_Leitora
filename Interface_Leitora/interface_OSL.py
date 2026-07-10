@@ -11,10 +11,29 @@ from kivy.lang import Builder
 from kivy.properties import BooleanProperty
 from kivy.uix.button import Button
 from kivy.uix.screenmanager import Screen
+from kivy.uix.popup import Popup
+from kivy.uix.label import Label
+from kivy.uix.boxlayout import BoxLayout
 
 from conversor import escrever_csv
 from Plot_grafico import gerar_grafico
 
+NomeArquivoBL = BoxLayout(orientation="vertical")
+
+lbl_erro = Label(text="Enter Valid File Name!")
+NomeArquivoBL.add_widget(lbl_erro)
+
+btn = Button(text="OK", size_hint_y=0.3)
+NomeArquivoBL.add_widget(btn)
+
+popupNomeArquivo = Popup(
+    title="Warning",
+    content=NomeArquivoBL,
+    size_hint=(None, None),
+    size=(400, 200)
+)
+
+btn.bind(on_release=popupNomeArquivo.dismiss)
 
 BAUD_RATE = 115200
 PORTAS_SERIAL = []
@@ -62,9 +81,20 @@ class TelaPrincipalLeitora(Screen):
     branco = 1
     f_fechar_log = False
     tempo_leitura = 3000
+    string_log = ""
+    #caminho_arquivo = ""
+
+    def bloquear_tela(self):
+        self.disabled = True
+        Clock.schedule_once(popupNomeArquivo.dismiss, 13)
+        Clock.schedule_once(self.desbloquear_tela, 14)
+
+    def desbloquear_tela(self, dt):
+        self.disabled = False
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
+        self.caminho_arquivo = None
         self.serial_connection = None
         self.buffer_serial = ""
         self.log_arquivo = None
@@ -91,56 +121,86 @@ class TelaPrincipalLeitora(Screen):
         testes_dia_dir.mkdir(parents=True, exist_ok=True)
 
         try:
-            caminho_arquivo = testes_dia_dir / nome_arquivo
-            self.log_arquivo = open(caminho_arquivo, "a", encoding="utf-8")
-            self.atualizar_status(f"Log iniciado em {caminho_arquivo}")
+            self.caminho_arquivo = testes_dia_dir / nome_arquivo
+            try:
+                self.log_arquivo = open(self.caminho_arquivo, "x", encoding="utf-8")
+            except FileExistsError:
+                lbl_erro.text = "File Already Exists."
+                popupNomeArquivo.open()
+                print("Arquivo já existe")
+                return
+
+            self.log_arquivo.close()
+            self.atualizar_status(f"Log iniciado em {self.caminho_arquivo}")
 
             self.nova_linha = True
             for linha in (
                 data_atual.strftime("%d/%m/%Y %H:%M:%S"),
                 nome_arquivo,
-                "Soma:",
-                "Dose:",
-                "Tempo;Leitura;Luz;Corrente",
+                "Integral:",
+                "Dose mSv:",
+                "Time;Count;Current;Light",
             ):
                 self.salvar_log(f"{linha} \n")
+
+            self.contador = 0.1
+            self.soma = 0
+            self.nova_linha = True
+            self.enviar_comando_sudo("leitura")
 
         except OSError as erro:
             self.atualizar_status(f"Erro ao criar arquivo: {erro}")
 
     def fechar_log(self):
+        self.ids.nome_arquivo_input.text = ""
         if not self.log_arquivo:
             return
-
         nome = self.log_arquivo.name
         self.atualizar_soma_no_log()
+        self.log_arquivo = open(self.caminho_arquivo, "a", encoding="utf-8")
+        self.log_arquivo.write(self.string_log)
         self.log_arquivo.close()
         self.log_arquivo = None
         self.atualizar_status(f"Log encerrado: {nome}")
 
     def salvar_log(self, mensagem):
         if self.log_arquivo:
-            self.log_arquivo.write(f"{mensagem}")
-            self.log_arquivo.flush()
+            self.string_log += f"{mensagem}"
+            #self.log_arquivo.write(f"{mensagem}")
+            #self.log_arquivo.flush()
 
     def atualizar_soma_no_log(self):
         if not self.log_arquivo:
+
             return
 
         nome_arquivo = self.log_arquivo.name
-        self.log_arquivo.flush()
+        #self.log_arquivo.flush()
 
         with open(nome_arquivo, "r", encoding="utf-8") as arquivo:
             linhas = arquivo.readlines()
 
+        linhas_string = self.string_log.splitlines()
+
         while len(linhas) < 4:
             linhas.append("\n")
+
+        while len(linhas_string) < 4:
+            linhas_string.append("\n")
+
 
         linhas[2] = f"Soma: {self.soma}\n"
         linhas[3] = f"Dose: {self.calcular_dose()}\n"
 
-        with open(nome_arquivo, "w", encoding="utf-8") as arquivo:
-            arquivo.writelines(linhas)
+        linhas_string[2] = f"Soma: {self.soma}"
+        linhas_string[3] = f"Dose: {self.calcular_dose()}"
+
+        self.ids.label_dose.text = f"{self.calcular_dose()}"
+
+        self.string_log = "\n".join(linhas_string)
+
+        #with open(nome_arquivo, "w", encoding="utf-8") as arquivo:
+        #    arquivo.writelines(linhas)
 
     def calcular_dose(self):
         return (
@@ -173,6 +233,9 @@ class TelaPrincipalLeitora(Screen):
         self.conectar_serial()
 
     def conectar_serial(self, *args):
+        lbl_erro.text = "Wait a Moment."
+        popupNomeArquivo.open()
+        self.bloquear_tela()
         porta = self.ids.porta_spinner.text
         if porta == "Porta":
             self.atualizar_status("Selecione uma porta serial.")
@@ -214,6 +277,8 @@ class TelaPrincipalLeitora(Screen):
     def enviar_serial(self, comando):
         if not self.serial_aberta():
             self.atualizar_status("Serial desconectada. Verifique a porta.")
+            lbl_erro.text = "Connect to OSL System!"
+            popupNomeArquivo.open()
             return
 
         try:
@@ -251,10 +316,19 @@ class TelaPrincipalLeitora(Screen):
         # intermediarias. Cada linha comeca pelo Tempo (ver registrar_valor).
         if frame.startswith("#L1%D"):
             self.registrar_valor(frame, fim_linha=True)
+            valor = int(frame[5:])
+            self.ids.label_light.text = f"{valor}"
+
         elif frame[:5] in ("#L1%A", "#L1%B", "#L1%E", "#L1%T"):
             if frame[:5] == "#L1%A":
                 valor = int(frame[5:])
+                self.ids.label_count.text = f"{valor}"
                 self.soma += valor
+
+            if frame[:5] == "#L1%E":
+                valor = int(frame[5:])
+                self.ids.label_current.text = f"{valor}"
+
             self.registrar_valor(frame, fim_linha=False)
         elif frame == "#L1%I0000000":
             self.enviar_serial(COMANDO_PARAMETROS_PADRAO)
@@ -266,7 +340,7 @@ class TelaPrincipalLeitora(Screen):
         if self.nova_linha:
             self.salvar_log(f"{self.contador:.1f};")
 
-            if self.contador > self.tempo_leitura/1000:
+            if self.contador > int(self.tempo_leitura)/1000:
                 self.f_fechar_log = True
 
             self.contador += 0.1
@@ -277,53 +351,71 @@ class TelaPrincipalLeitora(Screen):
             self.salvar_log(f"{valor} \n")
             self.nova_linha = True
             if self.f_fechar_log:
-                self.fechar_log()
+                self.ids.label_dose.text = f"{self.soma}"
                 self.f_fechar_log = False
+                self.fechar_log()
 
         else:
             self.salvar_log(f"{valor};")
 
     # Comandos
     def botao_leitura(self):
-        self.func_botao_log()
-        self.contador = 0.1
+        if not self.serial_aberta():
+            self.atualizar_status("Serial desconectada. Verifique a porta.")
+            lbl_erro.text = "Connect to OSL System!"
+            popupNomeArquivo.open()
+        else:
+            if not self.ids.nome_arquivo_input.text == "":
+                self.ids.LabelDose.text = "Dose (mSv)"
+                self.func_botao_log()
+            else:
+                lbl_erro.text = "Empty File Name!"
+                popupNomeArquivo.open()
+
+    def botao_ref_light(self):
+        self.ids.LabelDose.text = "Integral Light"
         self.soma = 0
-        self.nova_linha = True
         self.enviar_comando_sudo("leitura")
 
     def enviar_comando_sudo(self, nome_comando):
         self.enviar_serial(COMANDOS_SUDO[nome_comando])
 
     def enviar_parametros(self):
-        tela = self.manager.get_screen("parametros")
-        modo = tela.ids.modo_input.text.strip()
-        ganho = tela.ids.ganho_input.text.strip()
-        tempo_leitura = tela.ids.tempo_leitura_input.text.strip()
-        self.tempo_leitura = tempo_leitura
-        print(self.tempo_leitura)
-        potencia = tela.ids.potencia_input.text.strip()
-        tempo_zeramento = tela.ids.tempo_zeramento_input.text.strip()
-        potencia_zeramento = tela.ids.potencia_zeramento_input.text.strip()
+        if self.serial_connection:
+            tela = self.manager.get_screen("parametros")
+            modo = tela.ids.modo_input.text.strip()
+            ganho = tela.ids.ganho_input.text.strip()
+            tempo_leitura = tela.ids.tempo_leitura_input.text.strip()
+            self.tempo_leitura = tempo_leitura
+            print(self.tempo_leitura)
+            potencia = tela.ids.potencia_input.text.strip()
+            tempo_zeramento = tela.ids.tempo_zeramento_input.text.strip()
+            potencia_zeramento = tela.ids.potencia_zeramento_input.text.strip()
 
-        campos_validos = (
-            self._validar_campo_1_digito(modo, "M")
-            and self._validar_campo_1_digito(ganho, "G")
-            and self._validar_tempo(tempo_leitura, "L")
-            and self._validar_campo_1_digito(potencia, "P")
-            and self._validar_tempo(tempo_zeramento, "Z")
-            and self._validar_campo_1_digito(potencia_zeramento, "Q")
-        )
-        if not campos_validos:
-            return
+            campos_validos = (
+                self._validar_campo_1_digito(modo, "M")
+                and self._validar_campo_1_digito(ganho, "G")
+                and self._validar_tempo(tempo_leitura, "L")
+                and self._validar_campo_1_digito(potencia, "P")
+                and self._validar_tempo(tempo_zeramento, "Z")
+                and self._validar_campo_1_digito(potencia_zeramento, "Q")
+            )
+            if not campos_validos:
+                return
 
-        comando = (
-            f"#S1%M{modo}G{ganho}"
-            f"L{tempo_leitura.zfill(5)}"
-            f"P{potencia}"
-            f"Z{tempo_zeramento.zfill(5)}"
-            f"Q{potencia_zeramento}&"
-        )
-        self.enviar_serial(comando)
+            comando = (
+                f"#S1%M{modo}G{ganho}"
+                f"L{tempo_leitura.zfill(5)}"
+                f"P{potencia}"
+                f"Z{tempo_zeramento.zfill(5)}"
+                f"Q{potencia_zeramento}&"
+            )
+            self.enviar_serial(comando)
+            lbl_erro.text = "Parameters Updated!"
+            popupNomeArquivo.open()
+        else:
+            lbl_erro.text = "Connect to OSL System!"
+            popupNomeArquivo.open()
 
     # Utilitarios
     def atualizar_status(self, mensagem):
@@ -425,4 +517,5 @@ class AplicativoInterfaceOSL(App):
         main.desconectar_serial(atualizar_botao=False)
 
 
+Window.maximize()
 AplicativoInterfaceOSL().run()

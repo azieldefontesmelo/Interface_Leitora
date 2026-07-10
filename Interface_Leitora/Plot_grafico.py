@@ -53,7 +53,7 @@ def plotar_csv(caminho_csv, caminho_png, gerar_grafico_leitura=1, gerar_grafico_
         if gerar_grafico_luz:
             eixo.plot(tempo, vetores[3], label=nomes[3])
 
-        eixo.set_xlabel(nomes[0])
+        eixo.set_xlabel("Time (s)")
         eixo.legend()
     else:
         eixo.text(
@@ -62,7 +62,7 @@ def plotar_csv(caminho_csv, caminho_png, gerar_grafico_leitura=1, gerar_grafico_
         )
 
     eixo.set_title(Path(caminho_csv).stem)
-    eixo.set_ylabel("Valor")
+    eixo.set_ylabel("Value (u.a.)")
     eixo.grid(True)
     figura.tight_layout()
 
