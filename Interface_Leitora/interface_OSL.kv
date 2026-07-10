@@ -86,7 +86,7 @@ ScreenManager:
 
                 TextInput:
                     id: rcf_textInput
-                    text: "1"
+                    text: "0.001"
 
             BoxLayout:
                 size_hint_y: None
@@ -123,7 +123,7 @@ ScreenManager:
                 height: "36dp"
 
                 Label:
-                    text: "Branco"
+                    text: "Base Line"
                     text_size: self.size
                     font_size: "18sp"
                     halign: "center"
@@ -156,29 +156,80 @@ ScreenManager:
 
                 Button:
                     text: "Ref Light"
-                    on_release: app.root.get_screen("main").enviar_comando_sudo("liga_led")
+                    on_release: app.root.get_screen("main").botao_ref_light()
 
             Button:
-                text: "Results"
+                text: "Dose History"
                 size_hint_y: None
                 height: "36dp"
                 on_release: app.trocar_para_graficos()
 
-            Label:
-                id: status_label
-                text: "Conectando serial..."
-                size_hint_y: None
-                height: 32
-                text_size: self.size
-                halign: "left"
-                valign: "middle"
+            TabbedPanel:
+                do_default_tab: False
 
-            Label:
-                id: recebido_label
-                text: "Recebido: ---"
-                text_size: self.size
-                halign: "left"
-                valign: "top"
+                TabbedPanelItem:
+                    text: "Acquisition"
+
+                    BoxLayout:
+                        orientation: "vertical"
+
+                        BoxLayout:
+                            orientation: "horizontal"
+
+                            Label:
+                                text: "Count (0.1s)"
+                            Label:
+                                text: "Current (mA)"
+                            Label:
+                                text: "Light (mV)"
+                            Label:
+                                id: LabelDose
+                                text: "Dose (mSv)"
+
+
+                        BoxLayout:
+                            orientation: "horizontal"
+
+                            Label:
+                                id: label_count
+                                font_size: 40
+                                text: "0"
+                            Label:
+                                id: label_current
+                                font_size: 40
+                                text: "0"
+                            Label:
+                                id: label_light
+                                font_size: 40
+                                text: "0"
+                            Label:
+                                id: label_dose
+                                font_size: 40
+                                text: "0"
+
+                TabbedPanelItem:
+                    text: "Serial Monitor"
+
+                    BoxLayout:
+                        orientation: "vertical"
+
+                        Label:
+                            id: status_label
+                            text: "Conectando serial..."
+                            size_hint_y: None
+                            height: 32
+                            text_size: self.size
+                            halign: "left"
+                            valign: "middle"
+
+                        Label:
+                            id: recebido_label
+                            text: "Recebido: ---"
+                            text_size: self.size
+                            halign: "left"
+                            valign: "top"
+
+
 
         BotaoNavegacaoParametros:
             text: ""
@@ -228,60 +279,54 @@ ScreenManager:
 
             Label:
                 text: "Stimulation Mode"
-            TextInput:
+            Spinner:
                 id: modo_input
                 text: "1"
-                multiline: False
-                input_filter: "int"
+                values: ("1", "2")
 
             Label:
                 text: "Photomultiplier Gain"
-            TextInput:
+            Spinner:
                 id: ganho_input
                 text: "3"
-                multiline: False
-                input_filter: "int"
+                values: ("1", "2", "3", "4")
 
             Label:
-                text: "Reading Time"
-            TextInput:
+                text: "Read Time"
+            Spinner:
                 id: tempo_leitura_input
                 text: "03000"
-                multiline: False
-                input_filter: "int"
+                values: ("01000","02000","03000","05000","10000","30000","60000")
 
             Label:
                 text: "Stimulation Intensity"
-            TextInput:
+            Spinner:
                 id: potencia_input
                 text: "4"
-                multiline: False
-                input_filter: "int"
+                values: ("1", "2", "3", "4")
 
             Label:
                 text: "Erase Time"
-            TextInput:
+            Spinner:
                 id: tempo_zeramento_input
                 text: "05000"
-                multiline: False
-                input_filter: "int"
+                values: ("01000","02000","03000","05000","10000","30000","60000")
 
             Label:
                 text: "Erase Intensity"
-            TextInput:
+            Spinner:
                 id: potencia_zeramento_input
                 text: "2"
-                multiline: False
-                input_filter: "int"
+                values: ("1", "2", "3", "4")
 
         Button:
-            text: "Enviar parametros"
+            text: "Update"
             size_hint_y: None
             height: 48
             on_release: app.root.get_screen("main").enviar_parametros()
 
         Button:
-            text: "Voltar"
+            text: "Return"
             size_hint_y: None
             height: 48
             on_release: app.root.current = "main"
@@ -302,12 +347,6 @@ ScreenManager:
             size_hint_x: 0.4
             spacing: 8
 
-            Label:
-                text: "Arquivos de log"
-                size_hint_y: None
-                height: 30
-                bold: True
-
             FileChooserListView:
                 id: seletor_arquivo
                 filters: ["*.txt", "*.csv"]
@@ -318,7 +357,7 @@ ScreenManager:
             spacing: 8
 
             Label:
-                text: "Resultados"
+                text: "Dose History"
                 size_hint_y: None
                 height: 30
                 font_size: "22sp"
@@ -337,7 +376,7 @@ ScreenManager:
                     size: 30, 30
 
                 Label:
-                    text: "Mostrar Leitura"
+                    text: "Count (0.1s)"
                     size_hint_x: None
                     width: self.texture_size[0]
 
@@ -348,7 +387,7 @@ ScreenManager:
                     size: 30, 30
 
                 Label:
-                    text: "Mostrar Corrente de Led"
+                    text: "Current (mA)"
                     size_hint_x: None
                     width: self.texture_size[0]
 
@@ -359,14 +398,9 @@ ScreenManager:
                     size: 30, 30
 
                 Label:
-                    text: "Mostrar Densidade de Potência"
+                    text: "Light (mV)"
                     size_hint_x: None
                     width: self.texture_size[0]
-
-            Label:
-                text: "Gráfico"
-                size_hint_y: None
-                height: 45   # controla o bloco inteiro
 
             Image:
                 id: imagem_grafico
@@ -378,16 +412,16 @@ ScreenManager:
                 spacing: 8
 
                 Button:
-                    text: "Gerar grafico"
+                    text: "Plot"
                     on_release: app.root.get_screen("graficos").gerar_grafico()
 
                 Button:
-                    text: "Exportar CSV"
+                    text: "Export CSV"
                     on_release: app.root.get_screen("graficos").exportar_csv()
 
             Label:
                 id: status_grafico_label
-                text: "Selecione um arquivo de log."
+                text: "Select the log file."
                 size_hint_y: None
                 height: 32
                 text_size: self.size
@@ -395,7 +429,7 @@ ScreenManager:
                 valign: "middle"
 
             Button:
-                text: "Voltar"
+                text: "Return"
                 size_hint_y: None
                 height: 44
                 on_release: app.root.current = "main"
