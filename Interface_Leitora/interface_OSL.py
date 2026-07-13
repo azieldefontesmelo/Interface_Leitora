@@ -82,6 +82,8 @@ class TelaPrincipalLeitora(Screen):
     f_fechar_log = False
     tempo_leitura = 3000
     string_log = ""
+    soma_luz = 0
+    f_luz_ref = False
     #caminho_arquivo = ""
 
     def bloquear_tela(self):
@@ -145,6 +147,7 @@ class TelaPrincipalLeitora(Screen):
 
             self.contador = 0.1
             self.soma = 0
+            self.soma_luz = 0
             self.nova_linha = True
             self.enviar_comando_sudo("leitura")
 
@@ -195,7 +198,7 @@ class TelaPrincipalLeitora(Screen):
         linhas_string[2] = f"Soma: {self.soma}"
         linhas_string[3] = f"Dose: {self.calcular_dose()}"
 
-        self.ids.label_dose.text = f"{self.calcular_dose()}"
+        self.ids.label_dose.text = f"{self.calcular_dose():.2f}"
 
         self.string_log = "\n".join(linhas_string)
 
@@ -219,7 +222,7 @@ class TelaPrincipalLeitora(Screen):
         portas = list(dict.fromkeys(PORTAS_SERIAL + portas_detectadas))
 
         self.ids.porta_spinner.values = portas
-        self.ids.porta_spinner.text = portas[0] if portas else "Porta"
+        self.ids.porta_spinner.text = portas[0] if portas else "COM Port"
         self.atualizar_status(
             "Escolha a porta e clique em Conectar."
             if portas else "Nenhuma porta serial encontrada."
@@ -311,13 +314,17 @@ class TelaPrincipalLeitora(Screen):
     def processar_frame(self, frame):
         self.ids.recebido_label.text = f"Recebido: {frame}&"
         print(f"RECEBIDO: {frame}&")
-
+        print(f"f_luz_ref: {self.f_luz_ref}")
         # O frame D fecha a amostra (ultima coluna); os demais sao colunas
         # intermediarias. Cada linha comeca pelo Tempo (ver registrar_valor).
         if frame.startswith("#L1%D"):
             self.registrar_valor(frame, fim_linha=True)
             valor = int(frame[5:])
             self.ids.label_light.text = f"{valor}"
+            self.soma_luz += valor
+            if self.f_luz_ref:
+                print("luz_ref")
+                self.ids.label_dose.text = f"{self.soma_luz}"
 
         elif frame[:5] in ("#L1%A", "#L1%B", "#L1%E", "#L1%T"):
             if frame[:5] == "#L1%A":
@@ -351,7 +358,14 @@ class TelaPrincipalLeitora(Screen):
             self.salvar_log(f"{valor} \n")
             self.nova_linha = True
             if self.f_fechar_log:
-                self.ids.label_dose.text = f"{self.soma}"
+                if self.f_luz_ref:
+                    self.ids.label_dose.text = f"{self.soma_luz}"
+                else:
+                    self.ids.label_dose.text = f"{self.soma}"
+
+
+                self.f_luz_ref = False
+
                 self.f_fechar_log = False
                 self.fechar_log()
 
@@ -360,6 +374,12 @@ class TelaPrincipalLeitora(Screen):
 
     # Comandos
     def botao_leitura(self):
+        self.string_log = ""
+        self.ids.label_dose.text = "0"
+        self.ids.label_current.text = "0"
+        self.ids.label_light.text = "0"
+        self.ids.label_count.text = "0"
+        self.f_luz_ref = False
         if not self.serial_aberta():
             self.atualizar_status("Serial desconectada. Verifique a porta.")
             lbl_erro.text = "Connect to OSL System!"
@@ -373,8 +393,15 @@ class TelaPrincipalLeitora(Screen):
                 popupNomeArquivo.open()
 
     def botao_ref_light(self):
+        self.ids.label_dose.text = "0"
+        self.ids.label_current.text = "0"
+        self.ids.label_light.text = "0"
+        self.ids.label_count.text = "0"
         self.ids.LabelDose.text = "Integral Light"
         self.soma = 0
+        self.soma_luz = 0
+        self.f_luz_ref = True
+        self.contador = 0
         self.enviar_comando_sudo("leitura")
 
     def enviar_comando_sudo(self, nome_comando):
