@@ -1,5 +1,0 @@
-03/07/2026 11:07:44 
-teste3.txt 
-Soma: 0
-Dose: 0.0
-Tempo;Leitura;Luz;Corrente 
