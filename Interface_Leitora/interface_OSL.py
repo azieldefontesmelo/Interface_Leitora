@@ -17,6 +17,17 @@ from kivy.uix.boxlayout import BoxLayout
 
 from conversor import escrever_csv
 from Plot_grafico import gerar_grafico
+import os
+import sys
+
+def resource_path(relative_path):
+    try:
+        base_path = sys._MEIPASS
+    except AttributeError:
+        base_path = os.path.abspath(".")
+
+    return os.path.join(base_path, relative_path)
+
 
 NomeArquivoBL = BoxLayout(orientation="vertical")
 
@@ -46,9 +57,8 @@ COMANDOS_SUDO = {
     "zerar": "#S1%SC1011&",
     "liga_led": "#S1%SC1100&",
 }
-COMANDO_PARAMETROS_PADRAO = "#S1%M1G3L03000P4Z05000Q4&"
+COMANDO_PARAMETROS_PADRAO = "#S1%M1G4L03000P4Z05000Q4&"
 COMANDO_INICIAL = COMANDO_PARAMETROS_PADRAO
-
 
 class BotaoNavegacaoParametros(Button):
     hovered = BooleanProperty(False)
@@ -530,7 +540,7 @@ class AplicativoInterfaceOSL(App):
     title = "OSLMeter V4.0"
 
     def build(self):
-        return Builder.load_file("interface_OSL.kv")
+        return Builder.load_file(resource_path("interface_OSL.kv"))
 
     def trocar_para_graficos(self):
         self.root.transition.direction = "up"
