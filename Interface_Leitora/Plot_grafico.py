@@ -26,10 +26,59 @@ def ler_csv(caminho_csv):
         leitor = csv.reader(arquivo)
         nomes = next(leitor, [])
         vetores = [[] for _ in nomes]
-        for linha in leitor:
-            for indice, valor in enumerate(linha):
-                vetores[indice].append(float(valor))
+        for numero_linha, linha in enumerate(leitor, start=2):
+            if not linha:
+                continue
+            if len(linha) != len(vetores):
+                raise ValueError(
+                    f"Linha {numero_linha} possui {len(linha)} colunas; "
+                    f"esperadas {len(vetores)}."
+                )
+            try:
+                valores = [float(valor) for valor in linha]
+            except ValueError as erro:
+                raise ValueError(
+                    f"Valor inválido na linha {numero_linha}."
+                ) from erro
+            for indice, valor in enumerate(valores):
+                vetores[indice].append(valor)
     return nomes, vetores
+
+
+def _mapear_series(nomes, vetores):
+    """Normaliza os formatos históricos de 3, 4 e 5 colunas.
+
+    Formato antigo (3): Count, Current, Light; o tempo é o índice da amostra.
+    Formato esperado (4): Time, Count, Current, Light.
+    Formato atual (5): Time, Count, Current, Sample, Light.
+    """
+    quantidade = len(vetores)
+    if quantidade >= 5:
+        tempo = vetores[0]
+        indices = (1, 2, 4)
+    elif quantidade == 4:
+        tempo = vetores[0]
+        indices = (1, 2, 3)
+    elif quantidade == 3:
+        tempo = [indice * 0.1 for indice in range(len(vetores[0]))]
+        indices = (0, 1, 2)
+    else:
+        raise ValueError(
+            f"Formato não suportado: o arquivo possui {quantidade} colunas."
+        )
+
+    rotulos_padrao = ("Count (0.1s)", "Current (mA)", "Light (mV)")
+    series = []
+    for indice, rotulo in zip(indices, rotulos_padrao):
+        if indice >= quantidade:
+            continue
+        if len(vetores[indice]) != len(tempo):
+            raise ValueError(f"A coluna {indice + 1} possui tamanho inconsistente.")
+        nome = nomes[indice] if indice < len(nomes) else rotulo
+        if not nome or nome.startswith("coluna_"):
+            nome = rotulo
+        series.append((nome, vetores[indice]))
+    return tempo, series
 
 
 def plotar_csv(caminho_csv, caminho_png, gerar_grafico_leitura=1, gerar_grafico_corrente=1, gerar_grafico_luz=1):
@@ -40,34 +89,34 @@ def plotar_csv(caminho_csv, caminho_png, gerar_grafico_leitura=1, gerar_grafico_
     nomes, vetores = ler_csv(caminho_csv)
 
     figura, eixo = plt.subplots(figsize=(8, 5))
+    try:
+        if vetores and vetores[0]:
+            tempo, series = _mapear_series(nomes, vetores)
+            habilitadas = (
+                gerar_grafico_leitura,
+                gerar_grafico_corrente,
+                gerar_grafico_luz,
+            )
+            for habilitada, (nome, valores) in zip(habilitadas, series):
+                if habilitada:
+                    eixo.plot(tempo, valores, label=nome)
 
-    if vetores and vetores[0]:
-        tempo = vetores[0]
+            eixo.set_xlabel("Time (s)")
+            if any(habilitadas):
+                eixo.legend()
+        else:
+            eixo.text(
+                0.5, 0.5, "Sem dados para plotar",
+                ha="center", va="center", transform=eixo.transAxes,
+            )
 
-        if gerar_grafico_leitura:
-            eixo.plot(tempo, vetores[1], label=nomes[1])
-
-        if gerar_grafico_corrente:
-            eixo.plot(tempo, vetores[2], label=nomes[2])
-
-        if gerar_grafico_luz:
-            eixo.plot(tempo, vetores[3], label=nomes[3])
-
-        eixo.set_xlabel("Time (s)")
-        eixo.legend()
-    else:
-        eixo.text(
-            0.5, 0.5, "Sem dados para plotar",
-            ha="center", va="center", transform=eixo.transAxes,
-        )
-
-    eixo.set_title(Path(caminho_csv).stem)
-    eixo.set_ylabel("Value (u.a.)")
-    eixo.grid(True)
-    figura.tight_layout()
-
-    figura.savefig(caminho_png, dpi=100)
-    plt.close(figura)
+        eixo.set_title(Path(caminho_csv).stem)
+        eixo.set_ylabel("Value (u.a.)")
+        eixo.grid(True)
+        figura.tight_layout()
+        figura.savefig(caminho_png, dpi=100)
+    finally:
+        plt.close(figura)
 
     return Path(caminho_png)
 
@@ -77,7 +126,11 @@ def gerar_grafico(caminho_txt, caminho_png, caminho_csv=None, gerar_grafico_leit
 
     Devolve (caminho_csv, caminho_png).
     """
-    caminho_csv = escrever_csv(caminho_txt, caminho_csv)
+    caminho_txt = Path(caminho_txt)
+    if caminho_txt.suffix.lower() == ".csv":
+        caminho_csv = caminho_txt
+    else:
+        caminho_csv = escrever_csv(caminho_txt, caminho_csv)
     plotar_csv(caminho_csv, caminho_png, gerar_grafico_leitura, gerar_grafico_corrente, gerar_grafico_luz)
     return caminho_csv, Path(caminho_png)
 

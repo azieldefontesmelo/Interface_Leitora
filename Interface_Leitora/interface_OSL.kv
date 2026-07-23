@@ -10,22 +10,57 @@ ScreenManager:
 <TelaPrincipalLeitora>:
     name: "main"
 
-    BoxLayout:
-        orientation: "horizontal"
-        padding: 2
-        spacing: 2
+    ScrollView:
+        id: rolagem_principal
+        do_scroll_x: False
+        do_scroll_y: True
+        scroll_type: ["bars", "content"]
+        bar_width: "10dp"
+        bar_color: 0.55, 0.55, 0.55, 1
+        bar_inactive_color: 0.28, 0.28, 0.28, 0.8
 
         BoxLayout:
+            id: conteudo_principal
             orientation: "vertical"
+            size_hint_y: None
+            height: max(dp(700), root.height)
             padding: 8
             spacing: 8
 
-            Label:
-                text: "OSL Reading"
+            BoxLayout:
                 size_hint_y: None
-                height: 34
-                font_size: "22sp"
-                bold: True
+                height: "36dp"
+                spacing: 6
+
+                Widget:
+                    size_hint_x: None
+                    width: "36dp"
+
+                Label:
+                    text: "OSL Reading"
+                    font_size: "22sp"
+                    bold: True
+
+                BotaoNavegacaoParametros:
+                    text: ""
+                    size_hint: None, None
+                    size: "36dp", "36dp"
+                    background_normal: ""
+                    background_down: ""
+                    background_color: 0.18, 0.18, 0.18, 1
+                    color: 1, 1, 1, 1
+
+                    canvas.after:
+                        Color:
+                            rgba: 1, 1, 1, 1
+                        Rectangle:
+                            source: "assets/UI/angulo-direito-branco.png"
+                            size: dp(15), dp(15)
+                            pos: self.center_x - dp(7.5), self.center_y - dp(7.5)
+
+                    on_release:
+                        app.root.transition.direction = "left"
+                        app.root.current = "parametros"
 
             BoxLayout:
                 size_hint_y: None
@@ -166,46 +201,79 @@ ScreenManager:
 
             TabbedPanel:
                 do_default_tab: False
+                size_hint_y: 1
+                size_hint_min_y: "170dp"
+                tab_height: "40dp"
 
                 TabbedPanelItem:
                     text: "Acquisition"
 
                     BoxLayout:
                         orientation: "vertical"
+                        padding: 4
 
                         BoxLayout:
                             orientation: "horizontal"
+                            size_hint_y: None
+                            height: "32dp"
+                            spacing: 4
 
                             Label:
                                 text: "Count (0.1s)"
+                                text_size: self.size
+                                halign: "center"
+                                valign: "middle"
                             Label:
                                 text: "Current (mA)"
+                                text_size: self.size
+                                halign: "center"
+                                valign: "middle"
                             Label:
                                 text: "Light (mV)"
+                                text_size: self.size
+                                halign: "center"
+                                valign: "middle"
                             Label:
                                 id: LabelDose
                                 text: "Dose (mSv)"
+                                text_size: self.size
+                                halign: "center"
+                                valign: "middle"
 
 
                         BoxLayout:
                             orientation: "horizontal"
+                            size_hint_y: 1
+                            spacing: 4
 
                             Label:
                                 id: label_count
-                                font_size: 40
+                                font_size: "32sp"
                                 text: "0"
+                                text_size: self.size
+                                halign: "center"
+                                valign: "middle"
                             Label:
                                 id: label_current
-                                font_size: 40
+                                font_size: "32sp"
                                 text: "0"
+                                text_size: self.size
+                                halign: "center"
+                                valign: "middle"
                             Label:
                                 id: label_light
-                                font_size: 40
+                                font_size: "32sp"
                                 text: "0"
+                                text_size: self.size
+                                halign: "center"
+                                valign: "middle"
                             Label:
                                 id: label_dose
-                                font_size: 40
+                                font_size: "32sp"
                                 text: "0"
+                                text_size: self.size
+                                halign: "center"
+                                valign: "middle"
 
                 TabbedPanelItem:
                     text: "Serial Monitor"
@@ -229,31 +297,6 @@ ScreenManager:
                             halign: "left"
                             valign: "top"
 
-
-
-        BotaoNavegacaoParametros:
-            text: ""
-            size_hint_x: None
-            width: "45dp"
-
-            font_size: "22sp"
-            bold: True
-
-            background_normal: ""
-            background_down: ""
-            background_color: 0.18, 0.18, 0.18, 1
-
-            color: 1, 1, 1, 1
-            canvas.after:
-                Color:
-                    rgba: 1, 1, 1, 1
-                Rectangle:
-                    source: "assets/UI/angulo-direito-branco.png"
-                    size: dp(18), dp(18)
-                    pos: self.center_x - dp(9), self.center_y - dp(9)
-
-            on_release: app.root.current = "parametros"
-
 <TelaParametrosLeitura>:
     name: "parametros"
 
@@ -262,12 +305,41 @@ ScreenManager:
         padding: 12
         spacing: 12
 
-        Label:
-            text: "Setup"
+        BoxLayout:
             size_hint_y: None
-            height: 40
-            font_size: "22sp"
-            bold: True
+            height: "40dp"
+            spacing: 6
+
+            BotaoNavegacaoParametros:
+                text: ""
+                size_hint: None, None
+                size: "36dp", "36dp"
+                background_normal: ""
+                background_down: ""
+                background_color: 0.18, 0.18, 0.18, 1
+                color: 1, 1, 1, 1
+
+                canvas.after:
+                    Color:
+                        rgba: 1, 1, 1, 1
+                    Rectangle:
+                        source: "assets/UI/angulo-direito-branco.png"
+                        size: dp(15), dp(15)
+                        pos: self.center_x - dp(7.5), self.center_y - dp(7.5)
+                        tex_coords: 1, 0, 0, 0, 0, 1, 1, 1
+
+                on_release:
+                    app.root.transition.direction = "right"
+                    app.root.current = "main"
+
+            Label:
+                text: "Setup"
+                font_size: "22sp"
+                bold: True
+
+            Widget:
+                size_hint_x: None
+                width: "36dp"
 
         GridLayout:
             cols: 2
@@ -325,12 +397,6 @@ ScreenManager:
             height: 48
             on_release: app.root.get_screen("main").enviar_parametros()
 
-        Button:
-            text: "Return"
-            size_hint_y: None
-            height: 48
-            on_release: app.root.current = "main"
-
         Widget:
 
 
@@ -344,13 +410,53 @@ ScreenManager:
 
         BoxLayout:
             orientation: "vertical"
-            size_hint_x: 0.4
+            size_hint_x: 0.32
             spacing: 8
 
-            FileChooserListView:
-                id: seletor_arquivo
-                filters: ["*.txt", "*.csv"]
-                on_selection: app.root.get_screen("graficos").selecionar_arquivo(self.selection)
+            Label:
+                text: "Pastas e arquivos de teste"
+                size_hint_y: None
+                height: "32dp"
+                font_size: "16sp"
+                bold: True
+                text_size: self.size
+                halign: "left"
+                valign: "middle"
+
+            ArvoreArquivos:
+                id: arvore_arquivos
+
+            Label:
+                text: "Filtrar por data"
+                size_hint_y: None
+                height: "24dp"
+                text_size: self.size
+                halign: "left"
+                valign: "middle"
+
+            BoxLayout:
+                size_hint_y: None
+                height: "40dp"
+                spacing: 6
+
+                EntradaData:
+                    id: data_filtro
+                    hint_text: "dd/mm/aaaa"
+                    multiline: False
+                    write_tab: False
+                    on_text_validate: app.root.get_screen("graficos").filtrar_por_data()
+
+                Button:
+                    text: "Filtrar"
+                    size_hint_x: None
+                    width: "78dp"
+                    on_release: app.root.get_screen("graficos").filtrar_por_data()
+
+                Button:
+                    text: "Limpar"
+                    size_hint_x: None
+                    width: "70dp"
+                    on_release: app.root.get_screen("graficos").limpar_filtro_data()
 
         BoxLayout:
             orientation: "vertical"
@@ -412,10 +518,12 @@ ScreenManager:
                 spacing: 8
 
                 Button:
+                    id: botao_plot
                     text: "Plot"
                     on_release: app.root.get_screen("graficos").gerar_grafico()
 
                 Button:
+                    id: botao_exportar_csv
                     text: "Export CSV"
                     on_release: app.root.get_screen("graficos").exportar_csv()
 

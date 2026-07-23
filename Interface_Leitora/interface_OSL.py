@@ -1,6 +1,8 @@
 import tempfile
+import traceback
 from datetime import datetime
 from pathlib import Path
+from threading import Thread
 
 import serial
 import serial.tools.list_ports
@@ -14,6 +16,9 @@ from kivy.uix.screenmanager import Screen
 from kivy.uix.popup import Popup
 from kivy.uix.label import Label
 from kivy.uix.boxlayout import BoxLayout
+from kivy.uix.image import Image
+from kivy.uix.textinput import TextInput
+from kivy.uix.treeview import TreeView, TreeViewLabel, TreeViewNode
 
 from conversor import escrever_csv
 from Plot_grafico import gerar_grafico
@@ -80,6 +85,135 @@ class BotaoNavegacaoParametros(Button):
             (0.25, 0.25, 0.25, 1)
             if dentro else (0.18, 0.18, 0.18, 1)
         )
+
+
+class EntradaData(TextInput):
+    """TextInput com máscara automática dd/mm/aaaa."""
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self._formatacao_agendada = False
+        self.bind(text=self._agendar_formatacao)
+
+    def _agendar_formatacao(self, *args):
+        if self._formatacao_agendada:
+            return
+        self._formatacao_agendada = True
+        Clock.schedule_once(self._aplicar_mascara, 0)
+
+    def _aplicar_mascara(self, dt):
+        self._formatacao_agendada = False
+        digitos = "".join(
+            caractere for caractere in self.text if caractere.isdigit()
+        )[:8]
+        partes = [digitos[:2]]
+        if len(digitos) > 2:
+            partes.append(digitos[2:4])
+        if len(digitos) > 4:
+            partes.append(digitos[4:8])
+        formatado = "/".join(partes)
+        if len(digitos) in (2, 4):
+            formatado += "/"
+
+        if self.text != formatado:
+            self.text = formatado
+        self.cursor = (len(self.text), 0)
+
+
+class NoArvoreArquivos(BoxLayout, TreeViewNode):
+    """Item visual da árvore de pastas e arquivos."""
+
+    def __init__(self, caminho=None, pasta=False, **kwargs):
+        self.caminho = caminho
+        self.pasta = pasta
+        super().__init__(**kwargs)
+        self.is_leaf = not pasta
+        self.size_hint_y = None
+        self.height = "30dp"
+        self.orientation = "horizontal"
+        self.spacing = 6
+        self.padding = (4, 0)
+
+        self.add_widget(Image(
+            source=(
+                "atlas://data/images/defaulttheme/filechooser_folder"
+                if pasta else
+                resource_path("assets/UI/arquivo_csv.png")
+                if caminho and caminho.suffix.lower() == ".csv" else
+                "atlas://data/images/defaulttheme/filechooser_file"
+            ),
+            size_hint=(None, None),
+            size=(24, 24),
+        ))
+        nome = Label(
+            text=caminho.name if caminho else "",
+            size_hint_x=1,
+            color=(1, 1, 1, 1),
+            halign="left",
+            valign="middle",
+            shorten=True,
+            shorten_from="right",
+        )
+        nome.bind(size=lambda widget, tamanho: setattr(widget, "text_size", tamanho))
+        self.add_widget(nome)
+
+
+class ArvoreArquivos(TreeView):
+    """Árvore Ano/Mês/Dia dos arquivos de leitura."""
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.hide_root = True
+        self.indent_level = 22
+        self.caminho_base = None
+        self.selecao_callback = None
+
+    def recarregar(self, caminho_base, data_filtro=None):
+        self.caminho_base = Path(caminho_base)
+        for no in reversed(list(self.iterate_all_nodes())):
+            if no is not self.root:
+                self.remove_node(no)
+        self.root.is_open = True
+
+        arquivos = []
+        if data_filtro:
+            pasta_data = self.caminho_base / data_filtro.strftime("%Y/%m/%d")
+            if pasta_data.is_dir():
+                arquivos = sorted(
+                    arquivo for arquivo in pasta_data.iterdir()
+                    if arquivo.is_file()
+                    and arquivo.suffix.lower() in (".txt", ".csv")
+                )
+        elif self.caminho_base.is_dir():
+            arquivos = sorted(
+                arquivo for arquivo in self.caminho_base.rglob("*")
+                if arquivo.is_file() and arquivo.suffix.lower() in (".txt", ".csv")
+            )
+
+        if not arquivos:
+            vazio = self.add_node(NoArvoreArquivos(self.caminho_base / "Nenhum arquivo encontrado"), self.root)
+            vazio.is_leaf = True
+            return 0
+
+        nos_pasta = {}
+        for arquivo in arquivos:
+            relativo = arquivo.parent.relative_to(self.caminho_base)
+            pai = self.root
+            acumulado = self.caminho_base
+            for parte in relativo.parts:
+                acumulado = acumulado / parte
+                if acumulado not in nos_pasta:
+                    no_pasta = self.add_node(NoArvoreArquivos(acumulado, pasta=True), pai)
+                    no_pasta.is_open = True
+                    nos_pasta[acumulado] = no_pasta
+                pai = nos_pasta[acumulado]
+            no_arquivo = self.add_node(NoArvoreArquivos(arquivo), pai)
+            no_arquivo.bind(is_selected=self._quando_selecionado)
+        return len(arquivos)
+
+    def _quando_selecionado(self, no, selecionado):
+        if selecionado and self.selecao_callback:
+            self.selecao_callback(self, no)
 
 
 class TelaPrincipalLeitora(Screen):
@@ -229,7 +363,7 @@ class TelaPrincipalLeitora(Screen):
         portas_detectadas = [
             porta.device for porta in serial.tools.list_ports.comports()
         ]
-        portas = list(dict.fromkeys(PORTAS_SERIAL + portas_detectadas))
+        portas = list(dict.fromkeys(portas_detectadas + PORTAS_SERIAL))
 
         self.ids.porta_spinner.values = portas
         self.ids.porta_spinner.text = portas[0] if portas else "COM Port"
@@ -485,51 +619,157 @@ class TelaGraficos(Screen):
         super().__init__(**kwargs)
         self.arquivo_selecionado = None
         self.png_grafico = Path(tempfile.gettempdir()) / "grafico_osl.png"
+        self.operacao_em_andamento = False
 
     def on_pre_enter(self, *args):
-        self.ids.seletor_arquivo.path = str(TESTES_DIR)
+        self.ids.arvore_arquivos.selecao_callback = self.selecionar_no
+        self.ids.arvore_arquivos.recarregar(TESTES_DIR)
 
-    def selecionar_arquivo(self, selecao):
-        if not selecao:
+    def selecionar_no(self, arvore, no):
+        caminho = getattr(no, "caminho", None)
+        if not caminho or not caminho.is_file():
             return
-        self.arquivo_selecionado = Path(selecao[0])
+        self.arquivo_selecionado = caminho
         self.atualizar_status_grafico(
             f"Selecionado: {self.arquivo_selecionado.name}"
         )
 
-    def gerar_grafico(self):
-        if not self._tem_arquivo():
-            return
+    def filtrar_por_data(self):
+        texto = self.ids.data_filtro.text.strip()
         try:
-            gerar_grafico_leitura = self.ids.cb_leitura.active
-            gerar_grafico_corrente = self.ids.cb_corrente.active
-            gerar_grafico_luz = self.ids.cb_luz.active
-
-            caminho_csv, _ = gerar_grafico(
-                self.arquivo_selecionado, self.png_grafico, None, gerar_grafico_leitura, gerar_grafico_corrente, gerar_grafico_luz
+            data = datetime.strptime(texto, "%d/%m/%Y").date()
+        except ValueError:
+            self.atualizar_status_grafico(
+                "Informe uma data válida no formato dd/mm/aaaa."
             )
+            return
+
+        self.arquivo_selecionado = None
+        quantidade = self.ids.arvore_arquivos.recarregar(TESTES_DIR, data)
+        if quantidade:
+            self.atualizar_status_grafico(
+                f"{quantidade} arquivo(s) encontrado(s) em {texto}."
+            )
+        else:
+            self.atualizar_status_grafico(
+                f"Nenhum arquivo encontrado em {texto}."
+            )
+
+    def limpar_filtro_data(self):
+        self.ids.data_filtro.text = ""
+        self.arquivo_selecionado = None
+        self.ids.arvore_arquivos.recarregar(TESTES_DIR)
+        self.atualizar_status_grafico("Mostrando todos os arquivos.")
+
+    def gerar_grafico(self):
+        if self.operacao_em_andamento or not self._tem_arquivo():
+            return
+        opcoes = (
+            self.ids.cb_leitura.active,
+            self.ids.cb_corrente.active,
+            self.ids.cb_luz.active,
+        )
+        arquivo = self.arquivo_selecionado
+        self._definir_operacao(True, "Gerando gráfico...")
+        Thread(
+            target=self._gerar_grafico_worker,
+            args=(arquivo, opcoes),
+            daemon=True,
+        ).start()
+
+    def _gerar_grafico_worker(self, arquivo, opcoes):
+        try:
+            caminho_csv, _ = gerar_grafico(
+                arquivo,
+                self.png_grafico,
+                None,
+                *opcoes,
+            )
+        except Exception as erro:
+            traceback.print_exc()
+            mensagem = f"Erro ao gerar gráfico: {erro}"
+            Clock.schedule_once(
+                lambda dt, texto=mensagem: self._finalizar_operacao(texto),
+                0,
+            )
+            return
+        Clock.schedule_once(
+            lambda dt, caminho=caminho_csv: self._mostrar_grafico(caminho),
+            0,
+        )
+
+    def _mostrar_grafico(self, caminho_csv):
+        try:
             self.ids.imagem_grafico.source = str(self.png_grafico)
             self.ids.imagem_grafico.reload()
-            self.atualizar_status_grafico(
-                f"Grafico gerado (csv: {caminho_csv.name})"
+            self._finalizar_operacao(
+                f"Gráfico gerado (CSV: {Path(caminho_csv).name})."
             )
-        except (OSError, ValueError) as erro:
-            self.atualizar_status_grafico(f"Erro ao gerar grafico: {erro}")
+        except Exception as erro:
+            traceback.print_exc()
+            self._finalizar_operacao(f"Erro ao exibir gráfico: {erro}")
 
     def exportar_csv(self):
-        if not self._tem_arquivo():
+        if self.operacao_em_andamento or not self._tem_arquivo():
             return
+        arquivo = self.arquivo_selecionado
+        if arquivo.suffix.lower() == ".csv":
+            self.atualizar_status_grafico(f"O arquivo já é CSV: {arquivo}")
+            return
+        self._definir_operacao(True, "Exportando CSV...")
+        Thread(
+            target=self._exportar_csv_worker,
+            args=(arquivo,),
+            daemon=True,
+        ).start()
+
+    def _exportar_csv_worker(self, arquivo):
         try:
-            caminho_csv = escrever_csv(self.arquivo_selecionado)
-            self.atualizar_status_grafico(f"CSV salvo em {caminho_csv}")
-        except (OSError, ValueError) as erro:
-            self.atualizar_status_grafico(f"Erro ao exportar CSV: {erro}")
+            caminho_csv = escrever_csv(arquivo)
+        except Exception as erro:
+            traceback.print_exc()
+            mensagem = f"Erro ao exportar CSV: {erro}"
+            Clock.schedule_once(
+                lambda dt, texto=mensagem: self._finalizar_operacao(texto),
+                0,
+            )
+            return
+
+        Clock.schedule_once(
+            lambda dt, caminho=caminho_csv: self._finalizar_exportacao(caminho),
+            0,
+        )
+
+    def _finalizar_exportacao(self, caminho_csv):
+        texto_data = self.ids.data_filtro.text.strip()
+        data_filtro = None
+        if texto_data:
+            try:
+                data_filtro = datetime.strptime(texto_data, "%d/%m/%Y").date()
+            except ValueError:
+                data_filtro = None
+
+        self.ids.arvore_arquivos.recarregar(TESTES_DIR, data_filtro)
+        self._finalizar_operacao(f"CSV salvo em {caminho_csv}")
 
     def _tem_arquivo(self):
-        if self.arquivo_selecionado:
+        if (
+            self.arquivo_selecionado
+            and self.arquivo_selecionado.is_file()
+            and self.arquivo_selecionado.suffix.lower() in (".txt", ".csv")
+        ):
             return True
         self.atualizar_status_grafico("Selecione um arquivo de log.")
         return False
+
+    def _definir_operacao(self, ativa, mensagem):
+        self.operacao_em_andamento = ativa
+        self.ids.botao_plot.disabled = ativa
+        self.ids.botao_exportar_csv.disabled = ativa
+        self.atualizar_status_grafico(mensagem)
+
+    def _finalizar_operacao(self, mensagem):
+        self._definir_operacao(False, mensagem)
 
     def atualizar_status_grafico(self, mensagem):
         print(mensagem)
@@ -554,5 +794,10 @@ class AplicativoInterfaceOSL(App):
         main.desconectar_serial(atualizar_botao=False)
 
 
-Window.maximize()
-AplicativoInterfaceOSL().run()
+def main():
+    Window.maximize()
+    AplicativoInterfaceOSL().run()
+
+
+if __name__ == "__main__":
+    main()
