@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <path fill="#f0eef0" d="M128 16h248l120 120v344c0 9-7 16-16 16H128c-9 0-16-7-16-16V32c0-9 7-16 16-16z"/>
+  <path fill="#d8d5d8" d="M376 16v104c0 9 7 16 16 16h104z"/>
+  <path fill="#91d776" d="M168 160h248c18 0 32 14 32 32v192c0 18-14 32-32 32H168c-18 0-32-14-32-32V192c0-18 14-32 32-32zm0 48v48h248v-48zm0 64v48h248v-48zm0 64v48h248v-48z"/>
+  <path fill="#111" d="M168 144h248c26 0 48 22 48 48v192c0 26-22 48-48 48H168c-26 0-48-22-48-48V192c0-26 22-48 48-48zm0 32c-9 0-16 7-16 16v192c0 9 7 16 16 16h248c9 0 16-7 16-16V192c0-9-7-16-16-16zm0 48h248v32H168zm0 64h248v32H168zm72-112h16v192h-16zm112 0h16v192h-16z"/>
+  <rect x="32" y="304" width="304" height="144" rx="32" fill="#91d776" stroke="#111" stroke-width="16"/>
+  <path fill="#73c978" d="M32 336c0-18 14-32 32-32h16v112c0 18 14 32 32 32H64c-18 0-32-14-32-32z"/>
+  <text x="66" y="408" font-family="Arial, sans-serif" font-size="92" font-weight="700" fill="#111">CSV</text>
+</svg>
