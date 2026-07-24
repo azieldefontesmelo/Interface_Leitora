@@ -1,0 +1,637 @@
+#:kivy 1.11.1
+#:import dp kivy.metrics.dp
+
+ScreenManager:
+    TelaPrincipalLeitora:
+    TelaParametrosLeitura:
+    TelaGraficos:
+
+
+<TelaPrincipalLeitora>:
+    name: "main"
+
+    ScrollView:
+        id: rolagem_principal
+        do_scroll_x: False
+        do_scroll_y: True
+        # Sempre inicia mostrando o topo da tela principal.
+        scroll_y: 1
+        scroll_type: ["bars", "content"]
+        bar_width: "10dp"
+        bar_color: 0.55, 0.55, 0.55, 1
+        bar_inactive_color: 0.28, 0.28, 0.28, 0.8
+
+        BoxLayout:
+            id: conteudo_principal
+            orientation: "vertical"
+            size_hint_y: None
+            height: max(dp(700), root.height)
+            padding: 8
+            spacing: 8
+
+            BoxLayout:
+                size_hint_y: None
+                height: "36dp"
+                spacing: 6
+
+                Widget:
+                    size_hint_x: None
+                    width: "36dp"
+
+                Label:
+                    text: "OSL Reading"
+                    font_size: "22sp"
+                    bold: True
+
+                BotaoNavegacaoParametros:
+                    text: ""
+                    size_hint: None, None
+                    size: "36dp", "36dp"
+                    background_normal: ""
+                    background_down: ""
+                    background_color: 0.18, 0.18, 0.18, 1
+                    color: 1, 1, 1, 1
+
+                    canvas.after:
+                        Color:
+                            rgba: 1, 1, 1, 1
+                        Rectangle:
+                            source: "assets/UI/angulo-direito-branco.png"
+                            size: dp(15), dp(15)
+                            pos: self.center_x - dp(7.5), self.center_y - dp(7.5)
+
+                    on_release:
+                        app.root.transition.direction = "left"
+                        app.root.current = "parametros"
+
+            BoxLayout:
+                size_hint_y: None
+                height: "36dp"
+                spacing: 8
+
+                Spinner:
+                    id: porta_spinner
+                    text: "COM Port"
+                    values: []
+
+                Button:
+                    text: "Refresh"
+                    size_hint_x: None
+                    width: "100dp"
+                    on_release: app.root.get_screen("main").atualizar_portas_serial()
+
+                Button:
+                    id: botao_conexao_serial
+                    text: "Connect"
+                    size_hint_x: None
+                    width: "110dp"
+                    on_release: app.root.get_screen("main").func_botao_conexao_serial()
+
+            BoxLayout:
+                size_hint_y: None
+                height: "36dp"
+
+                TextInput:
+                    id: nome_arquivo_input
+                    hint_text: "File Name"
+
+            BoxLayout:
+                size_hint_y: None
+                height: "36dp"
+
+                Label:
+                    text: "ECC"
+                    text_size: self.size
+                    font_size: "18sp"
+                    halign: "center"
+                    valign: "middle"
+
+                TextInput:
+                    id: ecc_textInput
+                    text: "1"
+
+            BoxLayout:
+                size_hint_y: None
+                height: "36dp"
+
+                Label:
+                    text: "RCF"
+                    text_size: self.size
+                    font_size: "18sp"
+                    halign: "center"
+                    valign: "middle"
+
+                TextInput:
+                    id: rcf_textInput
+                    text: "0.000033"
+
+            BoxLayout:
+                size_hint_y: None
+                height: "36dp"
+
+                Label:
+                    text: "Fang"
+                    text_size: self.size
+                    font_size: "18sp"
+                    halign: "center"
+                    valign: "middle"
+
+                TextInput:
+                    id: fcal_textInput
+                    text: "1"
+
+            BoxLayout:
+                size_hint_y: None
+                height: "36dp"
+
+                Label:
+                    text: "Fenerg"
+                    text_size: self.size
+                    font_size: "18sp"
+                    halign: "center"
+                    valign: "middle"
+
+                TextInput:
+                    id: fenerg_textInput
+                    text: "1"
+
+            BoxLayout:
+                size_hint_y: None
+                height: "36dp"
+
+                Label:
+                    text: "Base Line"
+                    text_size: self.size
+                    font_size: "18sp"
+                    halign: "center"
+                    valign: "middle"
+
+                TextInput:
+                    id: branco_textInput
+                    text: "0"
+
+            GridLayout:
+
+
+
+                cols: 2
+                size_hint_y: None
+                height: 108
+                spacing: 8
+
+                Button:
+                    text: "Start"
+                    on_release: app.root.get_screen("main").botao_leitura()
+
+                Button:
+                    text: "Stop"
+                    on_release: app.root.get_screen("main").enviar_comando_sudo("stop")
+
+                Button:
+                    text: "Erase"
+                    on_release: app.root.get_screen("main").enviar_comando_sudo("zerar")
+
+                Button:
+                    text: "Ref Light"
+                    on_release: app.root.get_screen("main").botao_ref_light()
+
+            TabbedPanel:
+                do_default_tab: False
+                size_hint_y: 1
+                # Garante uma area minima legivel para as abas, inclusive
+                # em telas com pouca altura; a tela principal continua
+                # rolavel quando a janela for menor que esse tamanho.
+                size_hint_min_y: "300dp"
+                tab_height: "40dp"
+
+                TabbedPanelItem:
+                    text: "Acquisition"
+
+                    BoxLayout:
+                        orientation: "vertical"
+                        padding: 4
+
+                        BoxLayout:
+                            orientation: "horizontal"
+                            size_hint_y: None
+                            height: "32dp"
+                            spacing: 4
+
+                            Label:
+                                text: "Count (0.1s)"
+                                text_size: self.size
+                                halign: "center"
+                                valign: "middle"
+                            Label:
+                                text: "Current (mA)"
+                                text_size: self.size
+                                halign: "center"
+                                valign: "middle"
+                            Label:
+                                text: "Light (mV)"
+                                text_size: self.size
+                                halign: "center"
+                                valign: "middle"
+                            Label:
+                                id: LabelDose
+                                text: "Dose (mSv)"
+                                text_size: self.size
+                                halign: "center"
+                                valign: "middle"
+
+
+                        BoxLayout:
+                            orientation: "horizontal"
+                            size_hint_y: 1
+                            spacing: 4
+
+                            Label:
+                                id: label_count
+                                font_size: "32sp"
+                                text: "0"
+                                text_size: self.size
+                                halign: "center"
+                                valign: "middle"
+                            Label:
+                                id: label_current
+                                font_size: "32sp"
+                                text: "0"
+                                text_size: self.size
+                                halign: "center"
+                                valign: "middle"
+                            Label:
+                                id: label_light
+                                font_size: "32sp"
+                                text: "0"
+                                text_size: self.size
+                                halign: "center"
+                                valign: "middle"
+                            Label:
+                                id: label_dose
+                                font_size: "32sp"
+                                text: "0"
+                                text_size: self.size
+                                halign: "center"
+                                valign: "middle"
+
+                TabbedPanelItem:
+                    text: "Serial Monitor"
+
+                    BoxLayout:
+                        orientation: "vertical"
+
+                        Label:
+                            id: status_label
+                            text: "Conectando serial..."
+                            size_hint_y: None
+                            height: 32
+                            text_size: self.size
+                            halign: "left"
+                            valign: "middle"
+
+                        Label:
+                            id: recebido_label
+                            text: "Recebido: ---"
+                            text_size: self.size
+                            halign: "left"
+                            valign: "top"
+
+                TabbedPanelItem:
+                    text: "Graphics"
+
+                    BoxLayout:
+                        orientation: "vertical"
+                        padding: 4
+                        spacing: 4
+
+                        BoxLayout:
+                            size_hint_y: None
+                            height: "36dp"
+                            spacing: 18
+
+                            BoxLayout:
+                                size_hint_x: None
+                                width: "130dp"
+
+                                CheckBox:
+                                    id: cb_tempo_count
+                                    active: True
+                                    size_hint_x: None
+                                    width: "32dp"
+                                    on_active: root.ids.grafico_tempo_real.definir_serie("count", self.active)
+
+                                Label:
+                                    text: "Count (0.1s)"
+                                    color: 0.2, 0.7, 1, 1
+                                    text_size: self.size
+                                    halign: "left"
+                                    valign: "middle"
+
+                            BoxLayout:
+                                size_hint_x: None
+                                width: "130dp"
+
+                                CheckBox:
+                                    id: cb_tempo_current
+                                    active: True
+                                    size_hint_x: None
+                                    width: "32dp"
+                                    on_active: root.ids.grafico_tempo_real.definir_serie("current", self.active)
+
+                                Label:
+                                    text: "Current (mA)"
+                                    color: 1, 0.65, 0.2, 1
+                                    text_size: self.size
+                                    halign: "left"
+                                    valign: "middle"
+
+                            BoxLayout:
+                                size_hint_x: None
+                                width: "120dp"
+
+                                CheckBox:
+                                    id: cb_tempo_light
+                                    active: True
+                                    size_hint_x: None
+                                    width: "32dp"
+                                    on_active: root.ids.grafico_tempo_real.definir_serie("light", self.active)
+
+                                Label:
+                                    text: "Light (mV)"
+                                    color: 0.35, 0.9, 0.4, 1
+                                    text_size: self.size
+                                    halign: "left"
+                                    valign: "middle"
+
+                            Widget:
+
+                            Button:
+                                text: "Limpar"
+                                size_hint_x: None
+                                width: "90dp"
+                                on_release: app.root.get_screen("main").ids.grafico_tempo_real.limpar()
+
+                            Button:
+                                text: "Dose History"
+                                size_hint_x: None
+                                width: "120dp"
+                                on_release: app.trocar_para_graficos()
+
+                        GraficoTempoReal:
+                            id: grafico_tempo_real
+
+<TelaParametrosLeitura>:
+    name: "parametros"
+
+    BoxLayout:
+        orientation: "vertical"
+        padding: 12
+        spacing: 12
+
+        BoxLayout:
+            size_hint_y: None
+            height: "40dp"
+            spacing: 6
+
+            BotaoNavegacaoParametros:
+                text: ""
+                size_hint: None, None
+                size: "36dp", "36dp"
+                background_normal: ""
+                background_down: ""
+                background_color: 0.18, 0.18, 0.18, 1
+                color: 1, 1, 1, 1
+
+                canvas.after:
+                    Color:
+                        rgba: 1, 1, 1, 1
+                    Rectangle:
+                        source: "assets/UI/angulo-direito-branco.png"
+                        size: dp(15), dp(15)
+                        pos: self.center_x - dp(7.5), self.center_y - dp(7.5)
+                        tex_coords: 1, 0, 0, 0, 0, 1, 1, 1
+
+                on_release:
+                    app.root.transition.direction = "right"
+                    app.root.current = "main"
+
+            Label:
+                text: "Setup"
+                font_size: "22sp"
+                bold: True
+
+            Widget:
+                size_hint_x: None
+                width: "36dp"
+
+        GridLayout:
+            cols: 2
+            spacing: 8
+            row_default_height: 42
+            row_force_default: True
+            size_hint_y: None
+            height: self.minimum_height
+
+            Label:
+                text: "Stimulation Mode"
+            Spinner:
+                id: modo_input
+                text: "1"
+                values: ("1", "2")
+
+            Label:
+                text: "Photomultiplier Gain"
+            Spinner:
+                id: ganho_input
+                text: "4"
+                values: ("1", "2", "3", "4")
+
+            Label:
+                text: "Read Time"
+            Spinner:
+                id: tempo_leitura_input
+                text: "03000"
+                values: ("01000","02000","03000","05000","10000","30000","60000")
+
+            Label:
+                text: "Stimulation Intensity"
+            Spinner:
+                id: potencia_input
+                text: "4"
+                values: ("1", "2", "3", "4")
+
+            Label:
+                text: "Erase Time"
+            Spinner:
+                id: tempo_zeramento_input
+                text: "05000"
+                values: ("01000","02000","03000","05000","10000","30000","60000")
+
+            Label:
+                text: "Erase Intensity"
+            Spinner:
+                id: potencia_zeramento_input
+                text: "2"
+                values: ("1", "2", "3", "4")
+
+        Button:
+            text: "Update"
+            size_hint_y: None
+            height: 48
+            on_release: app.root.get_screen("main").enviar_parametros()
+
+        Widget:
+
+
+<TelaGraficos>:
+    name: "graficos"
+
+    BoxLayout:
+        orientation: "horizontal"
+        padding: 8
+        spacing: 8
+
+        BoxLayout:
+            orientation: "vertical"
+            size_hint_x: 0.32
+            spacing: 8
+
+            Label:
+                text: "Pastas e arquivos de teste"
+                size_hint_y: None
+                height: "32dp"
+                font_size: "16sp"
+                bold: True
+                text_size: self.size
+                halign: "left"
+                valign: "middle"
+
+            ScrollView:
+                id: rolagem_arvore
+                do_scroll_x: False
+                do_scroll_y: True
+                scroll_type: ["bars", "content"]
+                bar_width: "8dp"
+                bar_color: 0.55, 0.55, 0.55, 1
+                bar_inactive_color: 0.28, 0.28, 0.28, 0.8
+
+                ArvoreArquivos:
+                    id: arvore_arquivos
+                    size_hint_y: None
+                    height: self.altura_conteudo
+
+            Label:
+                text: "Filtrar por data"
+                size_hint_y: None
+                height: "24dp"
+                text_size: self.size
+                halign: "left"
+                valign: "middle"
+
+            BoxLayout:
+                size_hint_y: None
+                height: "40dp"
+                spacing: 6
+
+                EntradaData:
+                    id: data_filtro
+                    hint_text: "dd/mm/aaaa"
+                    multiline: False
+                    write_tab: False
+                    on_text_validate: app.root.get_screen("graficos").filtrar_por_data()
+
+                Button:
+                    text: "Filtrar"
+                    size_hint_x: None
+                    width: "78dp"
+                    on_release: app.root.get_screen("graficos").filtrar_por_data()
+
+                Button:
+                    text: "Limpar"
+                    size_hint_x: None
+                    width: "70dp"
+                    on_release: app.root.get_screen("graficos").limpar_filtro_data()
+
+        BoxLayout:
+            orientation: "vertical"
+            spacing: 8
+
+            Label:
+                text: "Dose History"
+                size_hint_y: None
+                height: 30
+                font_size: "22sp"
+                bold: True
+
+            BoxLayout:
+                orientation: "horizontal"
+                spacing: 5
+                size_hint_y: None
+                height: 45
+
+                CheckBox:
+                    id: cb_leitura
+                    active: True
+                    size_hint: None, None
+                    size: 30, 30
+
+                Label:
+                    text: "Count (0.1s)"
+                    size_hint_x: None
+                    width: self.texture_size[0]
+
+                CheckBox:
+                    id: cb_corrente
+                    active: True
+                    size_hint: None, None
+                    size: 30, 30
+
+                Label:
+                    text: "Current (mA)"
+                    size_hint_x: None
+                    width: self.texture_size[0]
+
+                CheckBox:
+                    id: cb_luz
+                    active: True
+                    size_hint: None, None
+                    size: 30, 30
+
+                Label:
+                    text: "Light (mV)"
+                    size_hint_x: None
+                    width: self.texture_size[0]
+
+            Image:
+                id: imagem_grafico
+                source: ""
+
+            BoxLayout:
+                size_hint_y: None
+                height: "44dp"
+                spacing: 8
+
+                Button:
+                    id: botao_plot
+                    text: "Plot"
+                    on_release: app.root.get_screen("graficos").gerar_grafico()
+
+                Button:
+                    id: botao_exportar_csv
+                    text: "Export CSV"
+                    on_release: app.root.get_screen("graficos").exportar_csv()
+
+            Label:
+                id: status_grafico_label
+                text: "Select the log file."
+                size_hint_y: None
+                height: 32
+                text_size: self.size
+                halign: "left"
+                valign: "middle"
+
+            Button:
+                text: "Return"
+                size_hint_y: None
+                height: 44
+                on_release: app.root.current = "main"

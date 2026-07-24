@@ -14,6 +14,8 @@ ScreenManager:
         id: rolagem_principal
         do_scroll_x: False
         do_scroll_y: True
+        # Em Kivy, scroll_y = 1 posiciona o topo do conteúdo no viewport.
+        scroll_y: 1
         scroll_type: ["bars", "content"]
         bar_width: "10dp"
         bar_color: 0.55, 0.55, 0.55, 1
@@ -23,7 +25,9 @@ ScreenManager:
             id: conteudo_principal
             orientation: "vertical"
             size_hint_y: None
-            height: max(dp(700), root.height)
+            # Inclui a altura mínima real dos filhos para não recortar os
+            # controles superiores em telas com pouca altura.
+            height: max(dp(700), self.minimum_height, root.height)
             padding: 8
             spacing: 8
 
@@ -84,14 +88,6 @@ ScreenManager:
                     size_hint_x: None
                     width: "110dp"
                     on_release: app.root.get_screen("main").func_botao_conexao_serial()
-
-            BoxLayout:
-                size_hint_y: None
-                height: "36dp"
-
-                TextInput:
-                    id: nome_arquivo_input
-                    hint_text: "File Name"
 
             BoxLayout:
                 size_hint_y: None
@@ -193,16 +189,21 @@ ScreenManager:
                     text: "Ref Light"
                     on_release: app.root.get_screen("main").botao_ref_light()
 
-            Button:
-                text: "Dose History"
+            BoxLayout:
                 size_hint_y: None
                 height: "36dp"
-                on_release: app.trocar_para_graficos()
+
+                TextInput:
+                    id: nome_arquivo_input
+                    hint_text: "File Name"
 
             TabbedPanel:
                 do_default_tab: False
                 size_hint_y: 1
-                size_hint_min_y: "170dp"
+                # Garante uma area minima legivel para as abas, inclusive
+                # em telas com pouca altura; a tela principal continua
+                # rolavel quando a janela for menor que esse tamanho.
+                size_hint_min_y: "300dp"
                 tab_height: "40dp"
 
                 TabbedPanelItem:
@@ -274,6 +275,102 @@ ScreenManager:
                                 text_size: self.size
                                 halign: "center"
                                 valign: "middle"
+
+                TabbedPanelItem:
+                    text: "Graphics"
+
+                    BoxLayout:
+                        orientation: "vertical"
+                        padding: 4
+                        spacing: 4
+
+                        BoxLayout:
+                            size_hint_y: None
+                            height: "36dp"
+                            spacing: 18
+
+                            BoxLayout:
+                                size_hint_x: None
+                                width: "130dp"
+
+                                CheckBox:
+                                    id: cb_tempo_count
+                                    active: True
+                                    size_hint_x: None
+                                    width: "32dp"
+                                    on_active: root.ids.grafico_tempo_real.definir_serie("count", self.active)
+
+                                Label:
+                                    text: "Count (0.1s)"
+                                    color: 0.2, 0.7, 1, 1
+                                    text_size: self.size
+                                    halign: "left"
+                                    valign: "middle"
+
+                            BoxLayout:
+                                size_hint_x: None
+                                width: "130dp"
+
+                                CheckBox:
+                                    id: cb_tempo_current
+                                    active: True
+                                    size_hint_x: None
+                                    width: "32dp"
+                                    on_active: root.ids.grafico_tempo_real.definir_serie("current", self.active)
+
+                                Label:
+                                    text: "Current (mA)"
+                                    color: 1, 0.65, 0.2, 1
+                                    text_size: self.size
+                                    halign: "left"
+                                    valign: "middle"
+
+                            BoxLayout:
+                                size_hint_x: None
+                                width: "120dp"
+
+                                CheckBox:
+                                    id: cb_tempo_light
+                                    active: True
+                                    size_hint_x: None
+                                    width: "32dp"
+                                    on_active: root.ids.grafico_tempo_real.definir_serie("light", self.active)
+
+                                Label:
+                                    text: "Light (mV)"
+                                    color: 0.35, 0.9, 0.4, 1
+                                    text_size: self.size
+                                    halign: "left"
+                                    valign: "middle"
+
+                            Widget:
+
+                            Button:
+                                text: "Limpar"
+                                size_hint_x: None
+                                width: "90dp"
+                                on_release: app.root.get_screen("main").ids.grafico_tempo_real.limpar()
+
+                            Button:
+                                text: "Dose History"
+                                size_hint_x: None
+                                width: "120dp"
+                                background_normal: ""
+                                background_down: ""
+                                background_color: 0, 0, 0, 0
+
+                                canvas.before:
+                                    Color:
+                                        rgba: (0.08, 0.42, 0.85, 1) if self.state == "down" else (0.35, 0.35, 0.35, 1)
+                                    RoundedRectangle:
+                                        pos: self.pos
+                                        size: self.size
+                                        radius: [dp(3)]
+
+                                on_release: app.trocar_para_graficos()
+
+                        GraficoTempoReal:
+                            id: grafico_tempo_real
 
                 TabbedPanelItem:
                     text: "Serial Monitor"
@@ -423,8 +520,19 @@ ScreenManager:
                 halign: "left"
                 valign: "middle"
 
-            ArvoreArquivos:
-                id: arvore_arquivos
+            ScrollView:
+                id: rolagem_arvore
+                do_scroll_x: False
+                do_scroll_y: True
+                scroll_type: ["bars", "content"]
+                bar_width: "8dp"
+                bar_color: 0.55, 0.55, 0.55, 1
+                bar_inactive_color: 0.28, 0.28, 0.28, 0.8
+
+                ArvoreArquivos:
+                    id: arvore_arquivos
+                    size_hint_y: None
+                    height: self.altura_conteudo
 
             Label:
                 text: "Filtrar por data"

@@ -1,6 +1,8 @@
 import tempfile
 import traceback
+from collections import deque
 from datetime import datetime
+from math import hypot
 from pathlib import Path
 from threading import Thread
 
@@ -10,7 +12,7 @@ from kivy.app import App
 from kivy.clock import Clock
 from kivy.core.window import Window
 from kivy.lang import Builder
-from kivy.properties import BooleanProperty
+from kivy.properties import BooleanProperty, NumericProperty
 from kivy.uix.button import Button
 from kivy.uix.screenmanager import Screen
 from kivy.uix.popup import Popup
@@ -18,6 +20,8 @@ from kivy.uix.label import Label
 from kivy.uix.boxlayout import BoxLayout
 from kivy.uix.image import Image
 from kivy.uix.textinput import TextInput
+from kivy.uix.widget import Widget
+from kivy.graphics import Color, Line, Rectangle
 from kivy.uix.treeview import TreeView, TreeViewLabel, TreeViewNode
 
 from conversor import escrever_csv
@@ -55,6 +59,7 @@ BAUD_RATE = 115200
 PORTAS_SERIAL = []
 
 TESTES_DIR = Path(__file__).resolve().parent / "assets" / "testes"
+LOG_SERIAL_DIR = Path(__file__).resolve().parent / "assets" / "log"
 
 COMANDOS_SUDO = {
     "leitura": "#S1%SC1001&",
@@ -93,11 +98,14 @@ class EntradaData(TextInput):
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
         self._formatacao_agendada = False
+        self._texto_anterior = self.text
+        self._excluindo = False
         self.bind(text=self._agendar_formatacao)
 
     def _agendar_formatacao(self, *args):
         if self._formatacao_agendada:
             return
+        self._excluindo = len(self.text) < len(self._texto_anterior)
         self._formatacao_agendada = True
         Clock.schedule_once(self._aplicar_mascara, 0)
 
@@ -112,12 +120,373 @@ class EntradaData(TextInput):
         if len(digitos) > 4:
             partes.append(digitos[4:8])
         formatado = "/".join(partes)
-        if len(digitos) in (2, 4):
+        # Ao apagar a barra com Backspace, não a recria imediatamente.
+        # Caso contrário o cursor fica preso depois de "20/07/".
+        if len(digitos) in (2, 4) and not self._excluindo:
             formatado += "/"
 
         if self.text != formatado:
             self.text = formatado
+        self._texto_anterior = self.text
+        self._excluindo = False
         self.cursor = (len(self.text), 0)
+
+
+class GraficoTempoReal(Widget):
+    """Gráfico leve, desenhado pelo Kivy, para acompanhar a serial ao vivo."""
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.amostras = deque(maxlen=240)
+        self.intervalo_amostra = 0.1
+        self.tempo_grafico = 0.0
+        self.series_ativas = {
+            "count": True,
+            "current": True,
+            "light": True,
+        }
+        self.unidades_series = {
+            "count": "Count (0.1s)",
+            "current": "Current (mA)",
+            "light": "Light (mV)",
+        }
+        self._redesenho_agendado = False
+        self.bind(pos=self._agendar_redesenho, size=self._agendar_redesenho)
+        with self.canvas:
+            Color(0.08, 0.08, 0.08, 1)
+            self.fundo = Rectangle(pos=self.pos, size=self.size)
+            Color(0.25, 0.25, 0.25, 1)
+            self.grade_horizontal = []
+            self.grade_vertical = []
+            for _ in range(5):
+                self.grade_horizontal.append(Line(width=1))
+                self.grade_vertical.append(Line(width=1))
+            Color(0.2, 0.7, 1, 1)
+            self.linha_count = Line(width=1.8)
+            Color(1, 0.65, 0.2, 1)
+            self.linha_current = Line(width=1.8)
+            Color(0.35, 0.9, 0.4, 1)
+            self.linha_light = Line(width=1.8)
+
+        self.pontos_interativos = []
+        self.rotulos_y = [
+            Label(
+                color=(0.82, 0.82, 0.82, 1),
+                font_size="11sp",
+                size_hint=(None, None),
+                halign="right",
+                valign="middle",
+            )
+            for _ in range(5)
+        ]
+        self.rotulos_x = [
+            Label(
+                color=(0.82, 0.82, 0.82, 1),
+                font_size="11sp",
+                size_hint=(None, None),
+                halign="center",
+                valign="middle",
+            )
+            for _ in range(5)
+        ]
+        self.titulo_x = Label(
+            text="Tempo (s)",
+            color=(0.9, 0.9, 0.9, 1),
+            font_size="12sp",
+            size_hint=(None, None),
+            halign="center",
+            valign="middle",
+        )
+        self.titulo_y = Label(
+            text="Valor",
+            color=(0.9, 0.9, 0.9, 1),
+            font_size="12sp",
+            size_hint=(None, None),
+            halign="left",
+            valign="middle",
+        )
+        self.tooltip = Label(
+            text="",
+            color=(1, 1, 1, 1),
+            font_size="11sp",
+            size_hint=(None, None),
+            size=(190, 42),
+            padding=(6, 4),
+            halign="left",
+            valign="middle",
+            opacity=0,
+        )
+        with self.tooltip.canvas.before:
+            Color(0.1, 0.1, 0.1, 0.95)
+            self.tooltip_fundo = Rectangle(
+                pos=self.tooltip.pos,
+                size=self.tooltip.size,
+            )
+        self.tooltip.bind(
+            pos=self._atualizar_fundo_tooltip,
+            size=self._atualizar_fundo_tooltip,
+        )
+        for rotulo in (*self.rotulos_y, *self.rotulos_x, self.titulo_x, self.titulo_y):
+            self.add_widget(rotulo)
+        self.add_widget(self.tooltip)
+        Window.bind(mouse_pos=self._quando_mouse_move)
+        self._redesenhar()
+
+    def adicionar_amostra(self, _tempo_origem, count, current, light):
+        # O contador da aquisição pode reiniciar ao começar outra leitura.
+        # O gráfico mantém um relógio próprio para o eixo X nunca voltar no tempo.
+        tempo_continuo = self.tempo_grafico
+        self.amostras.append(
+            (
+                tempo_continuo,
+                float(count),
+                float(current),
+                float(light),
+            )
+        )
+        self.tempo_grafico += self.intervalo_amostra
+        self._agendar_redesenho()
+
+    def definir_serie(self, nome, ativa):
+        if nome in self.series_ativas:
+            self.series_ativas[nome] = bool(ativa)
+            self._agendar_redesenho()
+
+    def limpar(self):
+        self.amostras.clear()
+        self.tempo_grafico = 0.0
+        self.tooltip.opacity = 0
+        self._agendar_redesenho()
+
+    def _agendar_redesenho(self, *args):
+        if not self._redesenho_agendado:
+            self._redesenho_agendado = True
+            Clock.schedule_once(self._redesenhar, 0)
+
+    def _redesenhar(self, *args):
+        self._redesenho_agendado = False
+        self.pontos_interativos = []
+        self.fundo.pos = self.pos
+        self.fundo.size = self.size
+        margem_esquerda = min(72, self.width * 0.16)
+        margem_direita = min(22, self.width * 0.05)
+        # Mantém os rótulos do eixo X afastados dos valores do eixo Y.
+        margem_inferior = max(58, min(70, self.height * 0.26))
+        # Reserva espaço para o título/unidade do eixo Y, separado do maior valor.
+        margem_superior = max(40, min(52, self.height * 0.2))
+        esquerda = self.x + margem_esquerda
+        direita = self.right - margem_direita
+        baixo = self.y + margem_inferior
+        alto = self.top - margem_superior
+        if direita <= esquerda or alto <= baixo:
+            return
+
+        for indice, linha in enumerate(self.grade_horizontal):
+            y = baixo + (alto - baixo) * indice / 4
+            linha.points = [esquerda, y, direita, y]
+        for indice, linha in enumerate(self.grade_vertical):
+            x = esquerda + (direita - esquerda) * indice / 4
+            linha.points = [x, baixo, x, alto]
+
+        pontos = list(self.amostras)
+        series = {
+            "count": (1, self.linha_count),
+            "current": (2, self.linha_current),
+            "light": (3, self.linha_light),
+        }
+        indices_ativos = [
+            indice
+            for nome, (indice, _) in series.items()
+            if self.series_ativas[nome]
+        ]
+        self._atualizar_unidade_y()
+        for nome, (_, linha) in series.items():
+            if not self.series_ativas[nome]:
+                linha.points = []
+
+        if not pontos:
+            self.linha_count.points = []
+            self.linha_current.points = []
+            self.linha_light.points = []
+            self._atualizar_rotulos(
+                esquerda, direita, baixo, alto, 0, 1, 0, 0
+            )
+            return
+
+        tempo_minimo = pontos[0][0]
+        tempo_maximo = pontos[-1][0]
+        if tempo_maximo == tempo_minimo:
+            tempo_maximo = tempo_minimo + 0.1
+
+        if not indices_ativos:
+            minimo, maximo = 0, 1
+            self.linha_count.points = []
+            self.linha_current.points = []
+            self.linha_light.points = []
+            self._atualizar_rotulos(
+                esquerda,
+                direita,
+                baixo,
+                alto,
+                minimo,
+                maximo,
+                tempo_minimo,
+                tempo_maximo,
+            )
+            return
+
+        minimo = min(
+            amostra[indice]
+            for amostra in pontos
+            for indice in indices_ativos
+        )
+        maximo = max(
+            amostra[indice]
+            for amostra in pontos
+            for indice in indices_ativos
+        )
+        if maximo == minimo:
+            margem = max(abs(maximo) * 0.05, 1)
+            minimo -= margem
+            maximo += margem
+        else:
+            margem = (maximo - minimo) * 0.05
+            minimo -= margem
+            maximo += margem
+
+        def serie(nome, indice):
+            pontos_linha = []
+            for amostra in pontos:
+                x = esquerda + (
+                    (amostra[0] - tempo_minimo)
+                    / (tempo_maximo - tempo_minimo)
+                    * (direita - esquerda)
+                )
+                y = baixo + (amostra[indice] - minimo) / (maximo - minimo) * (alto - baixo)
+                pontos_linha.extend((x, y))
+                self.pontos_interativos.append(
+                    (nome, x, y, amostra[0], amostra[indice])
+                )
+            return pontos_linha
+
+        for nome, (indice, linha) in series.items():
+            linha.points = (
+                serie(nome, indice) if self.series_ativas[nome] else []
+            )
+
+        self._atualizar_rotulos(
+            esquerda,
+            direita,
+            baixo,
+            alto,
+            minimo,
+            maximo,
+            tempo_minimo,
+            tempo_maximo,
+        )
+
+    def _atualizar_fundo_tooltip(self, *args):
+        self.tooltip_fundo.pos = self.tooltip.pos
+        self.tooltip_fundo.size = self.tooltip.size
+
+    def _ponto_mais_proximo(self, x, y, limite=34):
+        if not self.pontos_interativos:
+            return None
+        ponto = min(
+            self.pontos_interativos,
+            key=lambda item: hypot(item[1] - x, item[2] - y),
+        )
+        return ponto if hypot(ponto[1] - x, ponto[2] - y) <= limite else None
+
+    def _quando_mouse_move(self, _window, posicao):
+        if not self.get_root_window():
+            return
+        x, y = self.to_widget(*posicao)
+        if not self.collide_point(x, y):
+            self.tooltip.opacity = 0
+            return
+
+        ponto = self._ponto_mais_proximo(x, y, limite=42)
+        if not ponto:
+            self.tooltip.opacity = 0
+            return
+
+        nome, ponto_x, ponto_y, valor_x, valor_y = ponto
+        self.tooltip.text = (
+            f"{nome.title()}\n"
+            f"X: {valor_x:.2f} s\n"
+            f"Y: {self._formatar_numero(valor_y)} {self.unidades_series[nome].split(' ', 1)[-1].strip('()')}"
+        )
+        self.tooltip.texture_update()
+        self.tooltip.size = (190, 54)
+        self.tooltip.pos = (
+            min(x + 12, self.right - self.tooltip.width - 4),
+            min(y + 12, self.top - self.tooltip.height - 4),
+        )
+        self.tooltip.opacity = 1
+
+    def _atualizar_rotulos(
+        self,
+        esquerda,
+        direita,
+        baixo,
+        alto,
+        minimo,
+        maximo,
+        tempo_minimo,
+        tempo_maximo,
+    ):
+        for indice, rotulo in enumerate(self.rotulos_y):
+            fracao = indice / 4
+            y = baixo + (alto - baixo) * fracao
+            rotulo.text = self._formatar_numero(
+                minimo + (maximo - minimo) * fracao
+            )
+            rotulo.size = (max(48, esquerda - self.x - 8), 20)
+            rotulo.pos = (self.x, y - 10)
+            rotulo.text_size = rotulo.size
+
+        for indice, rotulo in enumerate(self.rotulos_x):
+            fracao = indice / 4
+            x = esquerda + (direita - esquerda) * fracao
+            rotulo.text = self._formatar_numero(
+                tempo_minimo + (tempo_maximo - tempo_minimo) * fracao
+            )
+            rotulo.size = (64, 20)
+            rotulo.pos = (x - 32, baixo - 32)
+            rotulo.text_size = rotulo.size
+
+        self.titulo_y.size = (min(520, self.width - 8), 20)
+        self.titulo_y.pos = (self.x + 4, alto + 12)
+        self.titulo_y.text_size = self.titulo_y.size
+        self.titulo_x.size = (100, 20)
+        self.titulo_x.pos = (
+            esquerda + (direita - esquerda) / 2 - 50,
+            self.y + 1,
+        )
+        self.titulo_x.text_size = self.titulo_x.size
+
+    def _atualizar_unidade_y(self):
+        unidades_ativas = [
+            unidade
+            for nome, unidade in self.unidades_series.items()
+            if self.series_ativas[nome]
+        ]
+        if unidades_ativas:
+            self.titulo_y.text = "Eixo Y: " + " | ".join(unidades_ativas)
+        else:
+            self.titulo_y.text = "Eixo Y: nenhuma série selecionada"
+
+    @staticmethod
+    def _formatar_numero(valor):
+        absoluto = abs(valor)
+        if absoluto >= 1_000_000 or (0 < absoluto < 0.001):
+            return f"{valor:.2e}"
+        if absoluto >= 100:
+            return f"{valor:.0f}"
+        if absoluto >= 10:
+            return f"{valor:.1f}"
+        return f"{valor:.2f}"
 
 
 class NoArvoreArquivos(BoxLayout, TreeViewNode):
@@ -133,6 +502,7 @@ class NoArvoreArquivos(BoxLayout, TreeViewNode):
         self.orientation = "horizontal"
         self.spacing = 6
         self.padding = (4, 0)
+        self.duplo_clique_callback = None
 
         self.add_widget(Image(
             source=(
@@ -157,8 +527,31 @@ class NoArvoreArquivos(BoxLayout, TreeViewNode):
         nome.bind(size=lambda widget, tamanho: setattr(widget, "text_size", tamanho))
         self.add_widget(nome)
 
+    def on_touch_down(self, touch):
+        if (
+            self.pasta
+            and not touch.is_mouse_scrolling
+            and self.collide_point(*touch.pos)
+        ):
+            # Permite abrir/fechar a pasta clicando na linha inteira,
+            # inclusive no ícone ou no nome, e não somente na seta.
+            if isinstance(self.parent, TreeView):
+                self.parent.toggle_node(self)
+            return True
+
+        if (
+            touch.is_double_tap
+            and self.caminho
+            and self.caminho.is_file()
+            and self.duplo_clique_callback
+        ):
+            self.duplo_clique_callback(self)
+        return super().on_touch_down(touch)
+
 
 class ArvoreArquivos(TreeView):
+    altura_conteudo = NumericProperty(40)
+
     """Árvore Ano/Mês/Dia dos arquivos de leitura."""
 
     def __init__(self, **kwargs):
@@ -167,9 +560,11 @@ class ArvoreArquivos(TreeView):
         self.indent_level = 22
         self.caminho_base = None
         self.selecao_callback = None
+        self.duplo_clique_callback = None
 
     def recarregar(self, caminho_base, data_filtro=None):
         self.caminho_base = Path(caminho_base)
+        self.altura_conteudo = 40
         for no in reversed(list(self.iterate_all_nodes())):
             if no is not self.root:
                 self.remove_node(no)
@@ -193,9 +588,11 @@ class ArvoreArquivos(TreeView):
         if not arquivos:
             vazio = self.add_node(NoArvoreArquivos(self.caminho_base / "Nenhum arquivo encontrado"), self.root)
             vazio.is_leaf = True
+            self.altura_conteudo = 30
             return 0
 
         nos_pasta = {}
+        quantidade_nos = 0
         for arquivo in arquivos:
             relativo = arquivo.parent.relative_to(self.caminho_base)
             pai = self.root
@@ -204,16 +601,29 @@ class ArvoreArquivos(TreeView):
                 acumulado = acumulado / parte
                 if acumulado not in nos_pasta:
                     no_pasta = self.add_node(NoArvoreArquivos(acumulado, pasta=True), pai)
-                    no_pasta.is_open = True
+                    # Mantem a arvore compacta: abre somente Ano e Mes
+                    # (por exemplo, 2026/07). Os dias ficam recolhidos.
+                    nivel = len(acumulado.relative_to(self.caminho_base).parts)
+                    no_pasta.is_open = nivel <= 2
                     nos_pasta[acumulado] = no_pasta
+                    quantidade_nos += 1
                 pai = nos_pasta[acumulado]
             no_arquivo = self.add_node(NoArvoreArquivos(arquivo), pai)
             no_arquivo.bind(is_selected=self._quando_selecionado)
+            no_arquivo.duplo_clique_callback = self._quando_duplo_clique
+            quantidade_nos += 1
+        self.altura_conteudo = max(40, quantidade_nos * 30)
         return len(arquivos)
 
     def _quando_selecionado(self, no, selecionado):
         if selecionado and self.selecao_callback:
             self.selecao_callback(self, no)
+
+    def _quando_duplo_clique(self, no):
+        if self.selecao_callback:
+            self.selecao_callback(self, no)
+        if self.duplo_clique_callback:
+            self.duplo_clique_callback(self, no)
 
 
 class TelaPrincipalLeitora(Screen):
@@ -243,10 +653,25 @@ class TelaPrincipalLeitora(Screen):
         self.caminho_arquivo = None
         self.serial_connection = None
         self.buffer_serial = ""
+        self.valor_count = 0
+        self.valor_current = 0
+        self.valor_light = 0
         self.log_arquivo = None
+        self.log_serial_arquivo = None
+        self.caminho_log_serial = None
         self.leitura_evento = None
         self.nova_linha = True
         Clock.schedule_once(self.atualizar_portas_serial, 0)
+        # O tamanho do conteúdo do ScrollView só fica definitivo após o
+        # primeiro ciclo de layout. Reposiciona no topo para não esconder os
+        # controles de conexão em resoluções menores.
+        Clock.schedule_once(self._mostrar_topo, 0)
+
+    def _mostrar_topo(self, _dt):
+        try:
+            self.ids.rolagem_principal.scroll_y = 1
+        except KeyError:
+            pass
 
     # Log
     def func_botao_log(self):
@@ -293,6 +718,7 @@ class TelaPrincipalLeitora(Screen):
             self.soma = 0
             self.soma_luz = 0
             self.nova_linha = True
+            self.ids.grafico_tempo_real.limpar()
             self.enviar_comando_sudo("leitura")
 
         except OSError as erro:
@@ -359,6 +785,50 @@ class TelaPrincipalLeitora(Screen):
         )
 
     # Serial
+    def _iniciar_log_serial(self, porta):
+        self._fechar_log_serial()
+        LOG_SERIAL_DIR.mkdir(parents=True, exist_ok=True)
+        agora = datetime.now()
+        nome = agora.strftime("serial_%Y%m%d_%H%M%S_%f.txt")
+        self.caminho_log_serial = LOG_SERIAL_DIR / nome
+        self.log_serial_arquivo = open(
+            self.caminho_log_serial,
+            "x",
+            encoding="utf-8",
+            buffering=1,
+        )
+        self._registrar_log_serial(
+            "SISTEMA",
+            f"Conectado em {porta} @ {BAUD_RATE}",
+        )
+
+    def _registrar_log_serial(self, direcao, dados):
+        if not self.log_serial_arquivo:
+            return
+
+        # Mantém cada evento em uma linha sem perder CR/LF recebidos.
+        texto = str(dados).replace("\r", "\\r").replace("\n", "\\n")
+        horario = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
+        try:
+            self.log_serial_arquivo.write(
+                f"[{horario}] [{direcao}] {texto}\n"
+            )
+            self.log_serial_arquivo.flush()
+        except OSError:
+            traceback.print_exc()
+
+    def _fechar_log_serial(self):
+        if not self.log_serial_arquivo:
+            return
+
+        self._registrar_log_serial("SISTEMA", "Comunicação encerrada")
+        try:
+            self.log_serial_arquivo.close()
+        except OSError:
+            traceback.print_exc()
+        finally:
+            self.log_serial_arquivo = None
+
     def atualizar_portas_serial(self, *args):
         portas_detectadas = [
             porta.device for porta in serial.tools.list_ports.comports()
@@ -384,7 +854,7 @@ class TelaPrincipalLeitora(Screen):
         popupNomeArquivo.open()
         self.bloquear_tela()
         porta = self.ids.porta_spinner.text
-        if porta == "Porta":
+        if porta in ("", "Porta", "COM Port"):
             self.atualizar_status("Selecione uma porta serial.")
             return
 
@@ -393,6 +863,7 @@ class TelaPrincipalLeitora(Screen):
             self.serial_connection = serial.Serial(
                 porta, BAUD_RATE, timeout=0.05
             )
+            self._iniciar_log_serial(porta)
             self.leitura_evento = Clock.schedule_interval(self.ler_serial, 0.1)
             Clock.schedule_once(
                 lambda dt: self.enviar_serial(COMANDO_INICIAL), 0.2
@@ -402,6 +873,7 @@ class TelaPrincipalLeitora(Screen):
             self.atualizar_status(f"Conectado em {porta} @ {BAUD_RATE}")
 
         except (OSError, serial.SerialException) as erro:
+            self.desconectar_serial(atualizar_botao=False)
             self.atualizar_status(f"Erro ao conectar: {erro}")
 
     def desconectar_serial(self, atualizar_botao=True):
@@ -413,6 +885,7 @@ class TelaPrincipalLeitora(Screen):
             self.serial_connection.close()
 
         self.serial_connection = None
+        self._fechar_log_serial()
 
         if atualizar_botao:
             self.ids.botao_conexao_serial.text = "Connect"
@@ -430,8 +903,10 @@ class TelaPrincipalLeitora(Screen):
 
         try:
             self.serial_connection.write(comando.encode("ascii"))
+            self._registrar_log_serial("TX", comando)
             self.atualizar_status(f"Enviado: {comando}")
         except serial.SerialException as erro:
+            self._registrar_log_serial("ERRO TX", erro)
             self.atualizar_status(f"Erro ao enviar: {erro}")
 
     def ler_serial(self, dt):
@@ -445,6 +920,7 @@ class TelaPrincipalLeitora(Screen):
             texto = self.serial_connection.read(
                 self.serial_connection.in_waiting
             ).decode("ascii", errors="ignore")
+            self._registrar_log_serial("RX", texto)
             self.buffer_serial += texto
 
             while "&" in self.buffer_serial:
@@ -453,6 +929,7 @@ class TelaPrincipalLeitora(Screen):
                     self.processar_frame(frame)
 
         except serial.SerialException as erro:
+            self._registrar_log_serial("ERRO RX", erro)
             self.atualizar_status(f"Erro na leitura serial: {erro}")
 
     def processar_frame(self, frame):
@@ -464,8 +941,10 @@ class TelaPrincipalLeitora(Screen):
         if frame.startswith("#L1%D"):
             self.registrar_valor(frame, fim_linha=True)
             valor = int(frame[5:])
+            self.valor_light = valor
             self.ids.label_light.text = f"{valor}"
             self.soma_luz += valor
+            self.atualizar_grafico_tempo_real()
             if self.f_luz_ref:
                 print("luz_ref")
                 self.ids.label_dose.text = f"{self.soma_luz}"
@@ -473,16 +952,31 @@ class TelaPrincipalLeitora(Screen):
         elif frame[:5] in ("#L1%A", "#L1%B", "#L1%E", "#L1%T"):
             if frame[:5] == "#L1%A":
                 valor = int(frame[5:])
+                self.valor_count = valor
                 self.ids.label_count.text = f"{valor}"
                 self.soma += valor
 
             if frame[:5] == "#L1%E":
                 valor = int(frame[5:])
+                self.valor_current = valor
                 self.ids.label_current.text = f"{valor}"
 
             self.registrar_valor(frame, fim_linha=False)
         elif frame == "#L1%I0000000":
             self.enviar_serial(COMANDO_PARAMETROS_PADRAO)
+
+    def atualizar_grafico_tempo_real(self):
+        """Envia uma amostra completa ao gráfico ao fechar cada linha serial."""
+        try:
+            self.ids.grafico_tempo_real.adicionar_amostra(
+                self.contador,
+                self.valor_count,
+                self.valor_current,
+                self.valor_light,
+            )
+        except (AttributeError, KeyError):
+            # O gráfico pode ainda não estar montado durante a inicialização.
+            pass
 
     def registrar_valor(self, frame, fim_linha):
         valor = int(frame[5:])
@@ -623,6 +1117,7 @@ class TelaGraficos(Screen):
 
     def on_pre_enter(self, *args):
         self.ids.arvore_arquivos.selecao_callback = self.selecionar_no
+        self.ids.arvore_arquivos.duplo_clique_callback = self._plotar_duplo_clique
         self.ids.arvore_arquivos.recarregar(TESTES_DIR)
 
     def selecionar_no(self, arvore, no):
@@ -633,6 +1128,10 @@ class TelaGraficos(Screen):
         self.atualizar_status_grafico(
             f"Selecionado: {self.arquivo_selecionado.name}"
         )
+
+    def _plotar_duplo_clique(self, arvore, no):
+        self.selecionar_no(arvore, no)
+        self.gerar_grafico()
 
     def filtrar_por_data(self):
         texto = self.ids.data_filtro.text.strip()
