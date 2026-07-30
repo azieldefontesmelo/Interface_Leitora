@@ -414,7 +414,7 @@ class GraficoTempoReal(Widget):
         nome, ponto_x, ponto_y, valor_x, valor_y = ponto
         self.tooltip.text = (
             f"{nome.title()}\n"
-            f"X: {valor_x:.2f} s\n"
+            f"X: {valor_x:.3f} s\n"
             f"Y: {self._formatar_numero(valor_y)} {self.unidades_series[nome].split(' ', 1)[-1].strip('()')}"
         )
         self.tooltip.texture_update()
@@ -486,7 +486,7 @@ class GraficoTempoReal(Widget):
             return f"{valor:.0f}"
         if absoluto >= 10:
             return f"{valor:.1f}"
-        return f"{valor:.2f}"
+        return f"{valor:.3f}"
 
 
 class NoArvoreArquivos(BoxLayout, TreeViewNode):
@@ -788,7 +788,7 @@ class TelaPrincipalLeitora(Screen):
     def formatar_dose(valor):
         """Usa tres casas para valores menores que 1 e duas nos demais."""
         valor = float(valor)
-        return f"{valor:.3f}" if abs(valor) < 1 else f"{valor:.2f}"
+        return f"{valor:.3f}" if abs(valor) < 1 else f"{valor:.3f}"
 
     # Serial
     def _iniciar_log_serial(self, porta):
