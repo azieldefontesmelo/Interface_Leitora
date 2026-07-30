@@ -763,12 +763,12 @@ class TelaPrincipalLeitora(Screen):
 
 
         linhas[2] = f"Soma: {self.soma}\n"
-        linhas[3] = f"Dose: {self.calcular_dose():.3f}\n"
+        linhas[3] = f"Dose: {self.formatar_dose(self.calcular_dose())}\n"
 
         linhas_string[2] = f"Soma: {self.soma}"
-        linhas_string[3] = f"Dose: {self.calcular_dose():.3f}"
+        linhas_string[3] = f"Dose: {self.formatar_dose(self.calcular_dose())}"
 
-        self.ids.label_dose.text = f"{self.calcular_dose():.3f}"
+        self.ids.label_dose.text = self.formatar_dose(self.calcular_dose())
 
         self.string_log = "\n".join(linhas_string)
 
@@ -783,6 +783,12 @@ class TelaPrincipalLeitora(Screen):
             * float(self.ids.fcal_textInput.text.replace(',', '.'))
             * float(self.ids.fenerg_textInput.text.replace(',', '.'))
         )
+
+    @staticmethod
+    def formatar_dose(valor):
+        """Usa tres casas para valores menores que 1 e duas nos demais."""
+        valor = float(valor)
+        return f"{valor:.3f}" if abs(valor) < 1 else f"{valor:.2f}"
 
     # Serial
     def _iniciar_log_serial(self, porta):
@@ -947,7 +953,7 @@ class TelaPrincipalLeitora(Screen):
             self.atualizar_grafico_tempo_real()
             if self.f_luz_ref:
                 print("luz_ref")
-                self.ids.label_dose.text = f"{self.soma_luz:.3f}"
+                self.ids.label_dose.text = self.formatar_dose(self.soma_luz)
 
         elif frame[:5] in ("#L1%A", "#L1%B", "#L1%E", "#L1%T"):
             if frame[:5] == "#L1%A":
@@ -997,9 +1003,9 @@ class TelaPrincipalLeitora(Screen):
             self.nova_linha = True
             if self.f_fechar_log:
                 if self.f_luz_ref:
-                    self.ids.label_dose.text = f"{self.soma_luz:.3f}"
+                    self.ids.label_dose.text = self.formatar_dose(self.soma_luz)
                 else:
-                    self.ids.label_dose.text = f"{self.soma:.3f}"
+                    self.ids.label_dose.text = self.formatar_dose(self.soma)
 
 
                 self.f_luz_ref = False
