@@ -1,3 +1,20 @@
+# OSLMeter - dependencias e instrucoes de execucao
+#
+# Requisito: Python 3.11 ou superior.
+# Execute os comandos abaixo a partir da pasta Interface_Leitora:
+#
+#   python -m venv .venv
+#   .venv\Scripts\Activate.ps1       # Windows PowerShell
+#   pip install -r requirements.txt
+#   python interface_OSL.py
+#
+# No Linux/macOS, ative o ambiente com:
+#   source .venv/bin/activate
+#
+# A aplicacao precisa ser executada nesta pasta para localizar o arquivo
+# interface_OSL.kv e a pasta assets. Para usar a leitora, conecte o equipamento
+# por uma porta serial disponivel antes de iniciar a aquisicao.
+
 kivy==2.3.1
 pyserial==3.5
 matplotlib==3.9.2
