@@ -763,12 +763,12 @@ class TelaPrincipalLeitora(Screen):
 
 
         linhas[2] = f"Soma: {self.soma}\n"
-        linhas[3] = f"Dose: {self.calcular_dose()}\n"
+        linhas[3] = f"Dose: {self.calcular_dose():.3f}\n"
 
         linhas_string[2] = f"Soma: {self.soma}"
-        linhas_string[3] = f"Dose: {self.calcular_dose()}"
+        linhas_string[3] = f"Dose: {self.calcular_dose():.3f}"
 
-        self.ids.label_dose.text = f"{self.calcular_dose():.2f}"
+        self.ids.label_dose.text = f"{self.calcular_dose():.3f}"
 
         self.string_log = "\n".join(linhas_string)
 
@@ -947,7 +947,7 @@ class TelaPrincipalLeitora(Screen):
             self.atualizar_grafico_tempo_real()
             if self.f_luz_ref:
                 print("luz_ref")
-                self.ids.label_dose.text = f"{self.soma_luz}"
+                self.ids.label_dose.text = f"{self.soma_luz:.3f}"
 
         elif frame[:5] in ("#L1%A", "#L1%B", "#L1%E", "#L1%T"):
             if frame[:5] == "#L1%A":
@@ -997,9 +997,9 @@ class TelaPrincipalLeitora(Screen):
             self.nova_linha = True
             if self.f_fechar_log:
                 if self.f_luz_ref:
-                    self.ids.label_dose.text = f"{self.soma_luz}"
+                    self.ids.label_dose.text = f"{self.soma_luz:.3f}"
                 else:
-                    self.ids.label_dose.text = f"{self.soma}"
+                    self.ids.label_dose.text = f"{self.soma:.3f}"
 
 
                 self.f_luz_ref = False
@@ -1013,7 +1013,7 @@ class TelaPrincipalLeitora(Screen):
     # Comandos
     def botao_leitura(self):
         self.string_log = ""
-        self.ids.label_dose.text = "0"
+        self.ids.label_dose.text = "0.000"
         self.ids.label_current.text = "0"
         self.ids.label_light.text = "0"
         self.ids.label_count.text = "0"
@@ -1031,7 +1031,7 @@ class TelaPrincipalLeitora(Screen):
                 popupNomeArquivo.open()
 
     def botao_ref_light(self):
-        self.ids.label_dose.text = "0"
+        self.ids.label_dose.text = "0.000"
         self.ids.label_current.text = "0"
         self.ids.label_light.text = "0"
         self.ids.label_count.text = "0"
