@@ -9,6 +9,7 @@ from threading import Thread
 
 import serial
 import serial.tools.list_ports
+import pandas as pd
 from kivy.app import App
 from kivy.clock import Clock
 from kivy.core.window import Window
@@ -641,6 +642,7 @@ class ArvoreArquivos(TreeView):
 
 class TelaPrincipalLeitora(Screen):
     test_mode = StringProperty("MANUAL")
+    reading_type = StringProperty("PERSONAL_DOSE")
     dosimeter_status = StringProperty(
         "Aguardando leitura do código de barras"
     )
@@ -728,6 +730,19 @@ class TelaPrincipalLeitora(Screen):
             )
             self.agendar_foco_dosimetro()
 
+    def botao_apagar(self):
+        if self.log_arquivo:
+            self.atualizar_status(
+                "Finalize ou interrompa a leitura antes de apagar."
+            )
+            return
+        if self.test_mode == "DOSIMETER_ID":
+            self.reading_type = "BACKGROUND"
+            self.atualizar_status(
+                "Apagamento iniciado; a próxima leitura será Background."
+            )
+        self.enviar_comando_sudo("zerar")
+
     def agendar_foco_dosimetro(self, selecionar=True):
         Clock.schedule_once(
             lambda _dt: self._focar_dosimetro(selecionar),
@@ -759,6 +774,15 @@ class TelaPrincipalLeitora(Screen):
                 "Pressione Enter para consultar o dosímetro",
                 preserve_filename=False,
             )
+            # Permite iniciar clicando em Start depois de preencher o ID
+            # manualmente. O Enter continua funcionando para leitoras de
+            # código de barras, mas não deve ser obrigatório para o operador.
+            reader_id = self.ids.reader_spinner.text.strip()
+            if len(normalized) == 10 and reader_id not in (
+                "",
+                "Selecione a leitora",
+            ):
+                self.confirmar_codigo_dosimetro(normalized)
 
     def confirmar_codigo_dosimetro(self, value=None):
         try:
@@ -899,6 +923,7 @@ class TelaPrincipalLeitora(Screen):
         file_name = safe_test_filename(self.automatic_file_name)
         return {
             "test_mode": "DOSIMETER_ID",
+            "reading_type": self.reading_type,
             "reader_id": self.validated_reader["reader_id"],
             "dosimeter_id": self.validated_dosimeter["dosimeter_id"],
             "file_name": file_name,
@@ -932,6 +957,7 @@ class TelaPrincipalLeitora(Screen):
                 reader_id=context["reader_id"],
                 dosimeter_id=context["dosimeter_id"],
                 test_mode=context["test_mode"],
+                reading_type=context.get("reading_type"),
                 file_name=nome_arquivo,
                 ecc_applied=context["ecc"],
                 rcf_applied=context["rcf"],
@@ -1073,11 +1099,21 @@ class TelaPrincipalLeitora(Screen):
             count_01s=self.valor_count,
             current_ma=self.valor_current,
             light_mv=self.valor_light,
+            raw_signal=self.soma,
             dose_msv=dose,
             file_path=str(self.caminho_arquivo),
             status=status,
             notes=notes,
         )
+        if status == "CONCLUIDO":
+            self.obter_database().sync_measurement_history(
+                self.current_measurement_id
+            )
+            if (
+                self.applied_parameters
+                and self.applied_parameters.get("reading_type") == "BACKGROUND"
+            ):
+                self.reading_type = "PERSONAL_DOSE"
 
     def _atualizar_medicao_com_erro(self, notes):
         if self.current_measurement_id is None:
@@ -1447,13 +1483,61 @@ class TelaPrincipalLeitora(Screen):
         return False
 
 
+class CelulaTabelaDados(Label):
+    """Célula alinhada com fundo próprio para históricos em formato de grade."""
+
+    def __init__(self, *, background_color, **kwargs):
+        kwargs.setdefault("halign", "left")
+        kwargs.setdefault("valign", "middle")
+        kwargs.setdefault("padding", (10, 0))
+        super().__init__(**kwargs)
+        with self.canvas.before:
+            self._background_color = Color(*background_color)
+            self._background_rectangle = Rectangle(pos=self.pos, size=self.size)
+        self.bind(pos=self._atualizar_fundo, size=self._atualizar_fundo)
+        self.bind(size=self._atualizar_area_texto)
+        self._atualizar_area_texto()
+
+    def _atualizar_fundo(self, *_args):
+        self._background_rectangle.pos = self.pos
+        self._background_rectangle.size = self.size
+
+    def _atualizar_area_texto(self, *_args):
+        self.text_size = self.size
+
+
+class LinhaTabelaDados(BoxLayout):
+    def __init__(self, *, record=None, selection_callback=None, **kwargs):
+        super().__init__(**kwargs)
+        self.record = record
+        self.selection_callback = selection_callback
+
+    def on_touch_up(self, touch):
+        handled = super().on_touch_up(touch)
+        if handled:
+            return True
+        if (
+            self.selection_callback is not None
+            and self.collide_point(*touch.pos)
+        ):
+            self.selection_callback(self.record)
+            return True
+        return False
+
+
 class TelaParametrosLeitura(Screen):
     pass
 
 
 class TelaBancoDados(Screen):
     dosimeter_message = StringProperty("")
+    dosimeter_count = StringProperty("0 registros")
     reader_message = StringProperty("")
+    reader_count = StringProperty("0 registros")
+    personal_dose_message = StringProperty("")
+    personal_dose_count = StringProperty("0 registros")
+    background_message = StringProperty("")
+    background_count = StringProperty("0 registros")
     history_message = StringProperty("")
     history_count = StringProperty("0 registros")
     history_details = StringProperty(
@@ -1465,6 +1549,8 @@ class TelaBancoDados(Screen):
         self.database = None
         self._editing_dosimeter_id = None
         self._editing_reader_id = None
+        self._personal_dose_rows = []
+        self._background_rows = []
         self._history_rows = []
 
     def obter_database(self):
@@ -1477,6 +1563,8 @@ class TelaBancoDados(Screen):
         return self.database
 
     def on_pre_enter(self, *_args):
+        self.pesquisar_doses_pessoais()
+        self.pesquisar_backgrounds()
         self.pesquisar_dosimetros()
         self.pesquisar_leitoras()
         self.pesquisar_historico()
@@ -1533,26 +1621,16 @@ class TelaBancoDados(Screen):
         except (sqlite3.Error, RuntimeError, ValueError) as error:
             self.dosimeter_message = f"Erro na pesquisa: {error}"
             return
+        self.dosimeter_count = f"{len(rows)} registros"
         container = self.ids.db_dosimeter_results
-        container.clear_widgets()
-        for record in rows:
-            active = "Ativo" if record["active"] else "Inativo"
-            button = Button(
-                text=(
-                    f"{record['dosimeter_id']}   |   ECC {record['ecc']:.10g}"
-                    f"   |   {record['begin_date']} → {record['end_date']}"
-                    f"   |   {active}"
-                ),
-                size_hint_y=None,
-                height="36dp",
-                halign="left",
-            )
-            button.bind(
-                on_release=lambda _button, row=record: self.selecionar_dosimetro(
-                    row
-                )
-            )
-            container.add_widget(button)
+        dataframe = self._montar_dataframe_dosimetros(rows)
+        self._renderizar_dataframe(
+            container,
+            dataframe,
+            widths=(0.25, 0.12, 0.20, 0.20, 0.23),
+            alignments=("left", "right", "center", "center", "center"),
+            selection_callback=self.selecionar_dosimetro,
+        )
 
     def selecionar_dosimetro(self, record):
         self._editing_dosimeter_id = record["dosimeter_id"]
@@ -1631,27 +1709,16 @@ class TelaBancoDados(Screen):
         except (sqlite3.Error, RuntimeError, ValueError) as error:
             self.reader_message = f"Erro na pesquisa: {error}"
             return
+        self.reader_count = f"{len(rows)} registros"
         container = self.ids.db_reader_results
-        container.clear_widgets()
-        for record in rows:
-            active = "Ativa" if record["active"] else "Inativa"
-            end_date = record["end_date"] or "sem término"
-            button = Button(
-                text=(
-                    f"{record['reader_id']}   |   RCF {record['rcf']:.10g}"
-                    f"   |   {record['begin_date']} → {end_date}"
-                    f"   |   {active}"
-                ),
-                size_hint_y=None,
-                height="36dp",
-                halign="left",
-            )
-            button.bind(
-                on_release=lambda _button, row=record: self.selecionar_leitora(
-                    row
-                )
-            )
-            container.add_widget(button)
+        dataframe = self._montar_dataframe_leitoras(rows)
+        self._renderizar_dataframe(
+            container,
+            dataframe,
+            widths=(0.25, 0.12, 0.20, 0.20, 0.23),
+            alignments=("left", "right", "center", "center", "center"),
+            selection_callback=self.selecionar_leitora,
+        )
 
     def selecionar_leitora(self, record):
         self._editing_reader_id = record["reader_id"]
@@ -1684,6 +1751,246 @@ class TelaBancoDados(Screen):
         except (TypeError, ValueError, sqlite3.Error) as error:
             self.reader_message = str(error)
 
+    @staticmethod
+    def _montar_dataframe_dosimetros(rows):
+        columns = ["Dosímetro", "ECC", "Data inicial", "Data final", "Status"]
+        if not rows:
+            return pd.DataFrame(columns=columns)
+        frame = pd.DataFrame.from_records(rows).sort_values(
+            "dosimeter_id",
+            kind="stable",
+        )
+        records = [rows[index] for index in frame.index]
+        frame["Dosímetro"] = frame["dosimeter_id"].astype("string")
+        frame["ECC"] = pd.to_numeric(frame["ecc"]).map(
+            lambda value: f"{value:.10g}"
+        )
+        frame["Data inicial"] = pd.to_datetime(
+            frame["begin_date"],
+            errors="coerce",
+        ).dt.strftime("%d/%m/%Y")
+        frame["Data final"] = pd.to_datetime(
+            frame["end_date"],
+            errors="coerce",
+        ).dt.strftime("%d/%m/%Y")
+        frame["Status"] = frame["active"].map({1: "Ativo", 0: "Inativo"})
+        result = frame.loc[:, columns].fillna("—").reset_index(drop=True)
+        result.attrs["records"] = records
+        return result
+
+    @staticmethod
+    def _montar_dataframe_leitoras(rows):
+        columns = ["Leitora", "RCF", "Data inicial", "Data final", "Status"]
+        if not rows:
+            return pd.DataFrame(columns=columns)
+        frame = pd.DataFrame.from_records(rows).sort_values(
+            "reader_id",
+            kind="stable",
+        )
+        records = [rows[index] for index in frame.index]
+        frame["Leitora"] = frame["reader_id"].astype("string")
+        frame["RCF"] = pd.to_numeric(frame["rcf"]).map(
+            lambda value: f"{value:.10g}"
+        )
+        frame["Data inicial"] = pd.to_datetime(
+            frame["begin_date"],
+            errors="coerce",
+        ).dt.strftime("%d/%m/%Y")
+        frame["Data final"] = pd.to_datetime(
+            frame["end_date"],
+            errors="coerce",
+        ).dt.strftime("%d/%m/%Y")
+        frame["Status"] = frame["active"].map({1: "Ativa", 0: "Inativa"})
+        result = frame.loc[:, columns].fillna("—").reset_index(drop=True)
+        result.attrs["records"] = records
+        return result
+
+    @staticmethod
+    def _montar_dataframe_medicoes(rows):
+        columns = [
+            "Data/hora",
+            "Dosímetro",
+            "Leitora",
+            "Modo",
+            "Dose (mSv)",
+            "Status",
+        ]
+        if not rows:
+            return pd.DataFrame(columns=columns)
+        frame = pd.DataFrame.from_records(rows)
+        frame["_timestamp"] = pd.to_datetime(
+            frame["measured_at"],
+            utc=True,
+            errors="coerce",
+        )
+        frame = frame.sort_values("_timestamp", ascending=False, kind="stable")
+        records = [rows[index] for index in frame.index]
+        local_timezone = datetime.now().astimezone().tzinfo
+        frame["Data/hora"] = frame["_timestamp"].dt.tz_convert(
+            local_timezone
+        ).dt.strftime("%d/%m/%Y %H:%M:%S")
+        frame["Dosímetro"] = frame["dosimeter_id"].fillna("—").astype("string")
+        frame["Leitora"] = frame["reader_id"].fillna("—").astype("string")
+        frame["Modo"] = frame["test_mode"].astype("string")
+        frame["Dose (mSv)"] = pd.to_numeric(frame["dose_msv"]).map(
+            lambda value: f"{value:.3f}"
+        )
+        frame["Status"] = frame["status"].astype("string")
+        result = frame.loc[:, columns].fillna("—").reset_index(drop=True)
+        result.attrs["records"] = records
+        return result
+
+    @staticmethod
+    def _montar_dataframe_historico(
+        rows,
+        *,
+        time_column,
+        dose_column,
+        status_column,
+    ):
+        columns = ["Data/hora", "Dosímetro", "Dose (mSv)", "Status"]
+        if not rows:
+            return pd.DataFrame(columns=columns)
+
+        frame = pd.DataFrame.from_records(rows)
+        timestamps = pd.to_datetime(frame[time_column], utc=True, errors="coerce")
+        local_timezone = datetime.now().astimezone().tzinfo
+        frame["Data/hora"] = timestamps.dt.tz_convert(local_timezone).dt.strftime(
+            "%d/%m/%Y %H:%M:%S"
+        )
+        frame["Dosímetro"] = frame["dosimeter_id"].astype("string")
+
+        dose = pd.to_numeric(frame[dose_column], errors="coerce").fillna(0.0)
+        frame["Dose (mSv)"] = dose.map(lambda value: f"{value:.3f}")
+        frame["Status"] = frame[status_column].astype("string")
+        frame = frame.sort_values(time_column, ascending=False, kind="stable")
+        return frame.loc[:, columns].reset_index(drop=True)
+
+    @staticmethod
+    def _renderizar_dataframe(
+        container,
+        dataframe,
+        *,
+        widths=None,
+        alignments=None,
+        selection_callback=None,
+    ):
+        container.clear_widgets()
+        column_count = len(dataframe.columns)
+        widths = widths or tuple(1 / column_count for _ in range(column_count))
+        alignments = alignments or tuple("left" for _ in range(column_count))
+        records = dataframe.attrs.get("records", [])
+        for row_index, values in enumerate(
+            dataframe.itertuples(index=False, name=None)
+        ):
+            record = records[row_index] if row_index < len(records) else None
+            row = LinhaTabelaDados(
+                record=record,
+                selection_callback=selection_callback,
+                size_hint_y=None,
+                height="38dp",
+                spacing="1dp",
+            )
+            background = (
+                (0.145, 0.153, 0.169, 1)
+                if row_index % 2 == 0
+                else (0.115, 0.122, 0.137, 1)
+            )
+            for value, width, alignment in zip(
+                values,
+                widths,
+                alignments,
+            ):
+                row.add_widget(
+                    CelulaTabelaDados(
+                        text=str(value),
+                        size_hint_x=width,
+                        font_size="13sp",
+                        halign=alignment,
+                        color=(0.92, 0.94, 0.97, 1),
+                        background_color=background,
+                    )
+                )
+            container.add_widget(row)
+
+    def pesquisar_doses_pessoais(self):
+        try:
+            self._personal_dose_rows = (
+                self.obter_database().search_personal_doses(
+                    dosimeter_id=self.ids.db_personal_dose_dosimeter.text or None,
+                    date_from=self.ids.db_personal_dose_from.text or None,
+                    date_to=self.ids.db_personal_dose_to.text or None,
+                )
+            )
+        except (TypeError, ValueError, sqlite3.Error, RuntimeError) as error:
+            self.personal_dose_message = f"Erro na pesquisa: {error}"
+            return
+        self.personal_dose_count = f"{len(self._personal_dose_rows)} registros"
+        container = self.ids.db_personal_dose_results
+        dataframe = self._montar_dataframe_historico(
+            self._personal_dose_rows,
+            time_column="time_dos",
+            dose_column="dose_dos",
+            status_column="status_dos",
+        )
+        self._renderizar_dataframe(container, dataframe)
+        self.personal_dose_message = "Pesquisa concluída"
+
+    def pesquisar_backgrounds(self):
+        try:
+            self._background_rows = self.obter_database().search_backgrounds(
+                dosimeter_id=self.ids.db_background_dosimeter.text or None,
+                date_from=self.ids.db_background_from.text or None,
+                date_to=self.ids.db_background_to.text or None,
+            )
+        except (TypeError, ValueError, sqlite3.Error, RuntimeError) as error:
+            self.background_message = f"Erro na pesquisa: {error}"
+            return
+        self.background_count = f"{len(self._background_rows)} registros"
+        container = self.ids.db_background_results
+        dataframe = self._montar_dataframe_historico(
+            self._background_rows,
+            time_column="time_bg",
+            dose_column="dose_bg",
+            status_column="status_bg",
+        )
+        self._renderizar_dataframe(container, dataframe)
+        self.background_message = "Pesquisa concluída"
+
+    def exportar_csv_doses_pessoais(self):
+        try:
+            if not self._personal_dose_rows:
+                self.pesquisar_doses_pessoais()
+            output = ASSETS_DIR / "exports" / datetime.now().strftime(
+                "personal_dose_%Y-%m-%d_%H-%M-%S_%f.csv"
+            )
+            result = self.obter_database().export_personal_doses_csv(
+                output,
+                self._personal_dose_rows,
+            )
+            self.personal_dose_message = f"CSV exportado para {result}"
+            return result
+        except (OSError, sqlite3.Error, ValueError) as error:
+            self.personal_dose_message = f"Erro ao exportar CSV: {error}"
+            return None
+
+    def exportar_csv_backgrounds(self):
+        try:
+            if not self._background_rows:
+                self.pesquisar_backgrounds()
+            output = ASSETS_DIR / "exports" / datetime.now().strftime(
+                "background_%Y-%m-%d_%H-%M-%S_%f.csv"
+            )
+            result = self.obter_database().export_backgrounds_csv(
+                output,
+                self._background_rows,
+            )
+            self.background_message = f"CSV exportado para {result}"
+            return result
+        except (OSError, sqlite3.Error, ValueError) as error:
+            self.background_message = f"Erro ao exportar CSV: {error}"
+            return None
+
     def pesquisar_historico(self):
         mode = self.ids.db_history_mode.text
         try:
@@ -1699,24 +2006,21 @@ class TelaBancoDados(Screen):
             return
         self.history_count = f"{len(self._history_rows)} registros"
         container = self.ids.db_history_results
-        container.clear_widgets()
-        for record in self._history_rows:
-            button = Button(
-                text=(
-                    f"{self._display_datetime(record['measured_at'])} | "
-                    f"{record['dosimeter_id'] or '—'} | "
-                    f"{record['reader_id'] or '—'} | "
-                    f"{record['test_mode']} | "
-                    f"{record['dose_msv']:.10g} | {record['status']}"
-                ),
-                size_hint_y=None,
-                height="36dp",
-                halign="left",
-            )
-            button.bind(
-                on_release=lambda _button, row=record: self.mostrar_medicao(row)
-            )
-            container.add_widget(button)
+        dataframe = self._montar_dataframe_medicoes(self._history_rows)
+        self._renderizar_dataframe(
+            container,
+            dataframe,
+            widths=(0.23, 0.16, 0.14, 0.16, 0.13, 0.18),
+            alignments=(
+                "left",
+                "center",
+                "center",
+                "center",
+                "right",
+                "center",
+            ),
+            selection_callback=self.mostrar_medicao,
+        )
         self.history_message = "Pesquisa concluída"
 
     def mostrar_medicao(self, record):
@@ -1820,6 +2124,130 @@ class TelaBancoDados(Screen):
 
     def criar_backup(self, destination):
         return self.obter_database().backup(destination)
+
+    def abrir_dialogo_importacao(self):
+        if self._leitura_em_andamento():
+            self.history_message = (
+                "Finalize a leitura atual antes de importar outro banco."
+            )
+            return
+        import_directory = ASSETS_DIR / "backups"
+        import_directory.mkdir(parents=True, exist_ok=True)
+        content = BoxLayout(orientation="vertical", spacing=8, padding=8)
+        chooser = FileChooserListView(
+            path=str(import_directory),
+            filters=["*.sqlite3", "*.sqlite", "*.db"],
+            multiselect=False,
+            dirselect=False,
+        )
+        actions = BoxLayout(size_hint_y=None, height="42dp", spacing=8)
+        cancel = Button(text="Cancelar")
+        select = Button(text="Selecionar banco")
+        actions.add_widget(cancel)
+        actions.add_widget(select)
+        content.add_widget(chooser)
+        content.add_widget(actions)
+        popup = Popup(
+            title="Importar banco de dados SQLite",
+            content=content,
+            size_hint=(0.85, 0.85),
+        )
+        cancel.bind(on_release=popup.dismiss)
+        select.bind(
+            on_release=lambda *_args: self._solicitar_confirmacao_importacao(
+                popup,
+                chooser,
+            )
+        )
+        popup.open()
+
+    def _solicitar_confirmacao_importacao(self, selection_popup, chooser):
+        if not chooser.selection:
+            self.history_message = "Selecione um arquivo de banco de dados."
+            return
+        source = Path(chooser.selection[0]).expanduser().resolve()
+        if not source.is_file():
+            self.history_message = "O arquivo selecionado não existe."
+            return
+        selection_popup.dismiss()
+
+        content = BoxLayout(orientation="vertical", spacing=10, padding=12)
+        message = Label(
+            text=(
+                "O banco atual será substituído pelos dados de:\n"
+                f"{source}\n\n"
+                "Um backup automático do banco atual será criado antes "
+                "da importação."
+            ),
+            text_size=(620, None),
+            halign="left",
+            valign="middle",
+        )
+        actions = BoxLayout(size_hint_y=None, height="42dp", spacing=8)
+        cancel = Button(text="Cancelar")
+        confirm = Button(text="Confirmar importação")
+        actions.add_widget(cancel)
+        actions.add_widget(confirm)
+        content.add_widget(message)
+        content.add_widget(actions)
+        popup = Popup(
+            title="Confirmar importação",
+            content=content,
+            size_hint=(0.75, 0.52),
+        )
+        cancel.bind(on_release=popup.dismiss)
+        confirm.bind(
+            on_release=lambda *_args: self._confirmar_importacao(
+                popup,
+                source,
+                message,
+            )
+        )
+        popup.open()
+
+    def _confirmar_importacao(self, popup, source, message):
+        if self._leitura_em_andamento():
+            message.text = (
+                "A importação foi cancelada porque existe uma leitura em curso."
+            )
+            return
+        try:
+            result = self.importar_banco(source)
+        except (
+            OSError,
+            sqlite3.Error,
+            TypeError,
+            ValueError,
+            RuntimeError,
+        ) as error:
+            message.text = f"Não foi possível importar o banco:\n{error}"
+            self.history_message = f"Erro ao importar banco: {error}"
+            return
+        popup.dismiss()
+        self.history_message = (
+            "Banco importado com sucesso. Backup anterior salvo em "
+            f"{result['backup']}"
+        )
+
+    def importar_banco(self, source):
+        result = self.obter_database().import_database(source)
+        self.on_pre_enter()
+        self._refresh_main_readers()
+        if self.manager and self.manager.has_screen("main"):
+            main_screen = self.manager.get_screen("main")
+            main_screen._invalidar_dosimetro(
+                "Banco importado; valide novamente o dosímetro."
+            )
+        return result
+
+    def _leitura_em_andamento(self):
+        if not self.manager or not self.manager.has_screen("main"):
+            return False
+        main_screen = self.manager.get_screen("main")
+        return bool(
+            main_screen.current_measurement_id is not None
+            or main_screen.log_arquivo
+        )
 
     def _refresh_main_readers(self):
         if self.manager and self.manager.has_screen("main"):

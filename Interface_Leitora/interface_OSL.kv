@@ -460,7 +460,7 @@ ScreenManager:
 
                 Button:
                     text: "Erase"
-                    on_release: app.root.get_screen("main").enviar_comando_sudo("zerar")
+                    on_release: app.root.get_screen("main").botao_apagar()
 
                 Button:
                     text: "Ref Light"
@@ -959,7 +959,7 @@ ScreenManager:
                 valign: "middle"
 
             Label:
-                text: "Cadastros, histórico de leituras, CSV e backup SQLite"
+                text: "Cadastros, histórico de leituras, CSV, backup e importação SQLite"
                 font_size: "13sp"
                 color: 0.65, 0.65, 0.65, 1
                 text_size: self.size
@@ -969,7 +969,231 @@ ScreenManager:
         TabbedPanel:
             do_default_tab: False
             tab_height: "40dp"
-            tab_width: self.width / 3
+            tab_width: self.width / 5
+
+            TabbedPanelItem:
+                text: "Personal dose"
+
+                BoxLayout:
+                    orientation: "vertical"
+                    padding: "10dp"
+                    spacing: "8dp"
+
+                    GridLayout:
+                        cols: 3
+                        size_hint_y: None
+                        height: "66dp"
+                        spacing: "8dp"
+
+                        BoxLayout:
+                            orientation: "vertical"
+                            Label:
+                                text: "Dosimeter"
+                                size_hint_y: None
+                                height: "22dp"
+                            TextInput:
+                                id: db_personal_dose_dosimeter
+                                multiline: False
+                                on_text_validate: root.pesquisar_doses_pessoais()
+
+                        BoxLayout:
+                            orientation: "vertical"
+                            Label:
+                                text: "Initial date"
+                                size_hint_y: None
+                                height: "22dp"
+                            EntradaData:
+                                id: db_personal_dose_from
+                                hint_text: "dd/mm/aaaa"
+                                multiline: False
+
+                        BoxLayout:
+                            orientation: "vertical"
+                            Label:
+                                text: "Final date"
+                                size_hint_y: None
+                                height: "22dp"
+                            EntradaData:
+                                id: db_personal_dose_to
+                                hint_text: "dd/mm/aaaa"
+                                multiline: False
+
+                    BoxLayout:
+                        size_hint_y: None
+                        height: "36dp"
+
+                        canvas.before:
+                            Color:
+                                rgba: 0.09, 0.10, 0.12, 1
+                            Rectangle:
+                                pos: self.pos
+                                size: self.size
+
+                        Label:
+                            text: "Data/hora"
+                            size_hint_x: 0.30
+                            bold: True
+                            text_size: self.size
+                            halign: "left"
+                            valign: "middle"
+                            padding: "10dp", 0
+
+                        Label:
+                            text: "Dosímetro"
+                            size_hint_x: 0.23
+                            bold: True
+
+                        Label:
+                            text: "Dose (mSv)"
+                            size_hint_x: 0.19
+                            bold: True
+
+                        Label:
+                            text: "Status  •  " + root.personal_dose_count
+                            size_hint_x: 0.28
+                            bold: True
+
+                    ScrollView:
+                        do_scroll_x: False
+
+                        GridLayout:
+                            id: db_personal_dose_results
+                            cols: 1
+                            size_hint_y: None
+                            height: self.minimum_height
+                            spacing: "3dp"
+
+                    BoxLayout:
+                        size_hint_y: None
+                        height: "40dp"
+                        spacing: "8dp"
+
+                        Button:
+                            text: "Search"
+                            on_release: root.pesquisar_doses_pessoais()
+                        Button:
+                            text: "Export CSV"
+                            on_release: root.exportar_csv_doses_pessoais()
+
+                    Label:
+                        text: root.personal_dose_message
+                        size_hint_y: None
+                        height: "30dp"
+                        text_size: self.size
+                        halign: "left"
+                        valign: "middle"
+
+            TabbedPanelItem:
+                text: "Background"
+
+                BoxLayout:
+                    orientation: "vertical"
+                    padding: "10dp"
+                    spacing: "8dp"
+
+                    GridLayout:
+                        cols: 3
+                        size_hint_y: None
+                        height: "66dp"
+                        spacing: "8dp"
+
+                        BoxLayout:
+                            orientation: "vertical"
+                            Label:
+                                text: "Dosimeter"
+                                size_hint_y: None
+                                height: "22dp"
+                            TextInput:
+                                id: db_background_dosimeter
+                                multiline: False
+                                on_text_validate: root.pesquisar_backgrounds()
+
+                        BoxLayout:
+                            orientation: "vertical"
+                            Label:
+                                text: "Initial date"
+                                size_hint_y: None
+                                height: "22dp"
+                            EntradaData:
+                                id: db_background_from
+                                hint_text: "dd/mm/aaaa"
+                                multiline: False
+
+                        BoxLayout:
+                            orientation: "vertical"
+                            Label:
+                                text: "Final date"
+                                size_hint_y: None
+                                height: "22dp"
+                            EntradaData:
+                                id: db_background_to
+                                hint_text: "dd/mm/aaaa"
+                                multiline: False
+
+                    BoxLayout:
+                        size_hint_y: None
+                        height: "36dp"
+
+                        canvas.before:
+                            Color:
+                                rgba: 0.09, 0.10, 0.12, 1
+                            Rectangle:
+                                pos: self.pos
+                                size: self.size
+
+                        Label:
+                            text: "Data/hora"
+                            size_hint_x: 0.30
+                            bold: True
+                            text_size: self.size
+                            halign: "left"
+                            valign: "middle"
+                            padding: "10dp", 0
+
+                        Label:
+                            text: "Dosímetro"
+                            size_hint_x: 0.23
+                            bold: True
+
+                        Label:
+                            text: "Dose (mSv)"
+                            size_hint_x: 0.19
+                            bold: True
+
+                        Label:
+                            text: "Status  •  " + root.background_count
+                            size_hint_x: 0.28
+                            bold: True
+
+                    ScrollView:
+                        do_scroll_x: False
+
+                        GridLayout:
+                            id: db_background_results
+                            cols: 1
+                            size_hint_y: None
+                            height: self.minimum_height
+                            spacing: "3dp"
+
+                    BoxLayout:
+                        size_hint_y: None
+                        height: "40dp"
+                        spacing: "8dp"
+
+                        Button:
+                            text: "Search"
+                            on_release: root.pesquisar_backgrounds()
+                        Button:
+                            text: "Export CSV"
+                            on_release: root.exportar_csv_backgrounds()
+
+                    Label:
+                        text: root.background_message
+                        size_hint_y: None
+                        height: "30dp"
+                        text_size: self.size
+                        halign: "left"
+                        valign: "middle"
 
             TabbedPanelItem:
                 text: "Dosímetros"
@@ -1068,6 +1292,42 @@ ScreenManager:
                         Button:
                             text: "Ativar/Desativar"
                             on_release: root.alternar_dosimetro()
+
+                    BoxLayout:
+                        size_hint_y: None
+                        height: "36dp"
+
+                        canvas.before:
+                            Color:
+                                rgba: 0.09, 0.10, 0.12, 1
+                            Rectangle:
+                                pos: self.pos
+                                size: self.size
+
+                        Label:
+                            text: "Dosímetro"
+                            size_hint_x: 0.25
+                            bold: True
+                            text_size: self.size
+                            halign: "left"
+                            valign: "middle"
+                            padding: "10dp", 0
+                        Label:
+                            text: "ECC"
+                            size_hint_x: 0.12
+                            bold: True
+                        Label:
+                            text: "Data inicial"
+                            size_hint_x: 0.20
+                            bold: True
+                        Label:
+                            text: "Data final"
+                            size_hint_x: 0.20
+                            bold: True
+                        Label:
+                            text: "Status  •  " + root.dosimeter_count
+                            size_hint_x: 0.23
+                            bold: True
 
                     ScrollView:
                         do_scroll_x: False
@@ -1185,6 +1445,42 @@ ScreenManager:
                             text: "Ativar/Desativar"
                             on_release: root.alternar_leitora()
 
+                    BoxLayout:
+                        size_hint_y: None
+                        height: "36dp"
+
+                        canvas.before:
+                            Color:
+                                rgba: 0.09, 0.10, 0.12, 1
+                            Rectangle:
+                                pos: self.pos
+                                size: self.size
+
+                        Label:
+                            text: "Leitora"
+                            size_hint_x: 0.25
+                            bold: True
+                            text_size: self.size
+                            halign: "left"
+                            valign: "middle"
+                            padding: "10dp", 0
+                        Label:
+                            text: "RCF"
+                            size_hint_x: 0.12
+                            bold: True
+                        Label:
+                            text: "Data inicial"
+                            size_hint_x: 0.20
+                            bold: True
+                        Label:
+                            text: "Data final"
+                            size_hint_x: 0.20
+                            bold: True
+                        Label:
+                            text: "Status  •  " + root.reader_count
+                            size_hint_x: 0.23
+                            bold: True
+
                     ScrollView:
                         do_scroll_x: False
 
@@ -1274,17 +1570,42 @@ ScreenManager:
                         size_hint_y: None
                         height: "36dp"
 
+                        canvas.before:
+                            Color:
+                                rgba: 0.09, 0.10, 0.12, 1
+                            Rectangle:
+                                pos: self.pos
+                                size: self.size
+
                         Label:
-                            text: "Data/hora | Dosímetro | Leitora | Modo | Dose | Status"
+                            text: "Data/hora"
+                            size_hint_x: 0.23
                             bold: True
                             text_size: self.size
                             halign: "left"
                             valign: "middle"
+                            padding: "10dp", 0
 
                         Label:
-                            text: root.history_count
-                            size_hint_x: None
-                            width: "110dp"
+                            text: "Dosímetro"
+                            size_hint_x: 0.16
+                            bold: True
+                        Label:
+                            text: "Leitora"
+                            size_hint_x: 0.14
+                            bold: True
+                        Label:
+                            text: "Modo"
+                            size_hint_x: 0.16
+                            bold: True
+                        Label:
+                            text: "Dose (mSv)"
+                            size_hint_x: 0.13
+                            bold: True
+                        Label:
+                            text: "Status  •  " + root.history_count
+                            size_hint_x: 0.18
+                            bold: True
 
                     ScrollView:
                         do_scroll_x: False
@@ -1319,6 +1640,9 @@ ScreenManager:
                         Button:
                             text: "Exportar backup do banco"
                             on_release: root.abrir_dialogo_backup()
+                        Button:
+                            text: "Importar banco"
+                            on_release: root.abrir_dialogo_importacao()
 
                     Label:
                         text: root.history_message

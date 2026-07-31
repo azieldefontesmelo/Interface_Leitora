@@ -4,13 +4,14 @@ import csv
 import math
 import sqlite3
 import sys
+import tempfile
 from contextlib import contextmanager
 from datetime import date, datetime, time, timezone
 from pathlib import Path
 from typing import Any, Iterator, Mapping, Sequence
 
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 4
 BUSY_TIMEOUT_MS = 10_000
 
 
@@ -30,6 +31,7 @@ MEASUREMENT_COLUMNS = (
     "id",
     "measured_at",
     "test_mode",
+    "reading_type",
     "reader_id",
     "dosimeter_id",
     "file_name",
@@ -37,6 +39,7 @@ MEASUREMENT_COLUMNS = (
     "count_01s",
     "current_ma",
     "light_mv",
+    "raw_signal",
     "dose_msv",
     "ecc_applied",
     "rcf_applied",
@@ -49,7 +52,31 @@ MEASUREMENT_COLUMNS = (
     "updated_at",
 )
 
+PERSONAL_DOSE_COLUMNS = (
+    "id",
+    "measurement_id",
+    "time_dos",
+    "dosimeter_id",
+    "dose_dos",
+    "status_dos",
+    "created_at",
+)
+
+BACKGROUND_COLUMNS = (
+    "id",
+    "measurement_id",
+    "time_bg",
+    "dosimeter_id",
+    "dose_bg",
+    "status_bg",
+    "created_at",
+)
+
+PERSONAL_DOSE_STATUS = "Need to Erase"
+BACKGROUND_STATUS = "Ready to Use"
+
 VALID_TEST_MODES = frozenset({"MANUAL", "DOSIMETER_ID"})
+VALID_READING_TYPES = frozenset({"PERSONAL_DOSE", "BACKGROUND"})
 VALID_MEASUREMENT_STATUSES = frozenset(
     {"EM_ANDAMENTO", "CONCLUIDO", "INTERROMPIDO", "ERRO"}
 )
@@ -94,6 +121,10 @@ CREATE TABLE IF NOT EXISTS measurements (
     test_mode        TEXT NOT NULL CHECK (
         test_mode IN ('MANUAL', 'DOSIMETER_ID')
     ),
+    reading_type     TEXT CHECK (
+        reading_type IS NULL
+        OR reading_type IN ('PERSONAL_DOSE', 'BACKGROUND')
+    ),
     reader_id        TEXT,
     dosimeter_id     TEXT,
     file_name        TEXT NOT NULL DEFAULT '',
@@ -101,6 +132,7 @@ CREATE TABLE IF NOT EXISTS measurements (
     count_01s        INTEGER NOT NULL DEFAULT 0 CHECK (count_01s >= 0),
     current_ma       REAL NOT NULL DEFAULT 0 CHECK (current_ma >= 0),
     light_mv         REAL NOT NULL DEFAULT 0 CHECK (light_mv >= 0),
+    raw_signal       REAL NOT NULL DEFAULT 0 CHECK (raw_signal >= 0),
     dose_msv         REAL NOT NULL DEFAULT 0 CHECK (dose_msv >= 0),
     ecc_applied      REAL NOT NULL CHECK (ecc_applied > 0),
     rcf_applied      REAL NOT NULL CHECK (rcf_applied > 0),
@@ -138,6 +170,56 @@ CREATE INDEX IF NOT EXISTS idx_measurements_reader_date
 
 CREATE INDEX IF NOT EXISTS idx_measurements_mode_date
     ON measurements(test_mode, measured_at);
+
+CREATE TABLE IF NOT EXISTS historico_dose (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    measurement_id INTEGER,
+    time_dos     TEXT NOT NULL,
+    dosimeter_id TEXT NOT NULL,
+    dose_dos     REAL NOT NULL CHECK (dose_dos >= 0),
+    status_dos   TEXT NOT NULL DEFAULT 'Need to Erase'
+                 CHECK (status_dos = 'Need to Erase'),
+    created_at   TEXT NOT NULL,
+    FOREIGN KEY (dosimeter_id)
+        REFERENCES dosimeters(dosimeter_id)
+        ON UPDATE CASCADE
+        ON DELETE RESTRICT,
+    FOREIGN KEY (measurement_id)
+        REFERENCES measurements(id)
+        ON UPDATE CASCADE
+        ON DELETE RESTRICT
+);
+
+CREATE INDEX IF NOT EXISTS idx_historico_dose_dosimeter_time
+    ON historico_dose(dosimeter_id, time_dos DESC);
+
+CREATE INDEX IF NOT EXISTS idx_historico_dose_time
+    ON historico_dose(time_dos DESC);
+
+CREATE TABLE IF NOT EXISTS historico_branco (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    measurement_id INTEGER,
+    time_bg      TEXT NOT NULL,
+    dosimeter_id TEXT NOT NULL,
+    dose_bg      REAL NOT NULL CHECK (dose_bg >= 0),
+    status_bg    TEXT NOT NULL DEFAULT 'Ready to Use'
+                 CHECK (status_bg = 'Ready to Use'),
+    created_at   TEXT NOT NULL,
+    FOREIGN KEY (dosimeter_id)
+        REFERENCES dosimeters(dosimeter_id)
+        ON UPDATE CASCADE
+        ON DELETE RESTRICT,
+    FOREIGN KEY (measurement_id)
+        REFERENCES measurements(id)
+        ON UPDATE CASCADE
+        ON DELETE RESTRICT
+);
+
+CREATE INDEX IF NOT EXISTS idx_historico_branco_dosimeter_time
+    ON historico_branco(dosimeter_id, time_bg DESC);
+
+CREATE INDEX IF NOT EXISTS idx_historico_branco_time
+    ON historico_branco(time_bg DESC);
 """
 
 
@@ -323,6 +405,7 @@ class Database:
                     "O banco foi criado por uma versão mais nova da aplicação"
                 )
             connection.executescript(SCHEMA)
+            self._migrate_measurement_histories(connection)
             if current_version < SCHEMA_VERSION:
                 now = utc_now()
                 connection.execute(
@@ -333,6 +416,181 @@ class Database:
                     (SCHEMA_VERSION, now),
                 )
                 connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
+
+    @staticmethod
+    def _migrate_measurement_histories(
+        connection: sqlite3.Connection,
+    ) -> None:
+        """Migrate legacy channel histories to the single-dose v4 model."""
+
+        def ensure_column(table: str, column: str, definition: str) -> None:
+            columns = {
+                row["name"]
+                for row in connection.execute(f"PRAGMA table_info({table})")
+            }
+            if column not in columns:
+                connection.execute(
+                    f"ALTER TABLE {table} ADD COLUMN {column} {definition}"
+                )
+
+        ensure_column(
+            "measurements",
+            "reading_type",
+            "TEXT CHECK (reading_type IS NULL OR reading_type IN "
+            "('PERSONAL_DOSE', 'BACKGROUND'))",
+        )
+        ensure_column(
+            "measurements",
+            "raw_signal",
+            "REAL NOT NULL DEFAULT 0 CHECK (raw_signal >= 0)",
+        )
+        ensure_column(
+            "historico_dose",
+            "measurement_id",
+            "INTEGER REFERENCES measurements(id) ON UPDATE CASCADE "
+            "ON DELETE RESTRICT",
+        )
+        ensure_column(
+            "historico_branco",
+            "measurement_id",
+            "INTEGER REFERENCES measurements(id) ON UPDATE CASCADE "
+            "ON DELETE RESTRICT",
+        )
+
+        dose_columns = {
+            row["name"]
+            for row in connection.execute("PRAGMA table_info(historico_dose)")
+        }
+        if "dose_dos" not in dose_columns:
+            connection.executescript(
+                """
+                CREATE TABLE historico_dose_v4 (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    measurement_id INTEGER,
+                    time_dos TEXT NOT NULL,
+                    dosimeter_id TEXT NOT NULL,
+                    dose_dos REAL NOT NULL CHECK (dose_dos >= 0),
+                    status_dos TEXT NOT NULL DEFAULT 'Need to Erase'
+                        CHECK (status_dos = 'Need to Erase'),
+                    created_at TEXT NOT NULL,
+                    FOREIGN KEY (dosimeter_id) REFERENCES dosimeters(dosimeter_id)
+                        ON UPDATE CASCADE ON DELETE RESTRICT,
+                    FOREIGN KEY (measurement_id) REFERENCES measurements(id)
+                        ON UPDATE CASCADE ON DELETE RESTRICT
+                );
+                INSERT INTO historico_dose_v4 (
+                    id, measurement_id, time_dos, dosimeter_id, dose_dos,
+                    status_dos, created_at
+                )
+                SELECT h.id, h.measurement_id, h.time_dos, h.dosimeter_id,
+                       COALESCE(m.dose_msv, MAX(h.hp10_dos, h.hp007_dos)),
+                       h.status_dos, h.created_at
+                FROM historico_dose h
+                LEFT JOIN measurements m ON m.id = h.measurement_id;
+                DROP TABLE historico_dose;
+                ALTER TABLE historico_dose_v4 RENAME TO historico_dose;
+                """
+            )
+
+        background_columns = {
+            row["name"]
+            for row in connection.execute("PRAGMA table_info(historico_branco)")
+        }
+        if "dose_bg" not in background_columns:
+            connection.executescript(
+                """
+                CREATE TABLE historico_branco_v4 (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    measurement_id INTEGER,
+                    time_bg TEXT NOT NULL,
+                    dosimeter_id TEXT NOT NULL,
+                    dose_bg REAL NOT NULL CHECK (dose_bg >= 0),
+                    status_bg TEXT NOT NULL DEFAULT 'Ready to Use'
+                        CHECK (status_bg = 'Ready to Use'),
+                    created_at TEXT NOT NULL,
+                    FOREIGN KEY (dosimeter_id) REFERENCES dosimeters(dosimeter_id)
+                        ON UPDATE CASCADE ON DELETE RESTRICT,
+                    FOREIGN KEY (measurement_id) REFERENCES measurements(id)
+                        ON UPDATE CASCADE ON DELETE RESTRICT
+                );
+                INSERT INTO historico_branco_v4 (
+                    id, measurement_id, time_bg, dosimeter_id, dose_bg,
+                    status_bg, created_at
+                )
+                SELECT h.id, h.measurement_id, h.time_bg, h.dosimeter_id,
+                       COALESCE(m.dose_msv, MAX(h.hp10_bg, h.hp007_bg)),
+                       h.status_bg, h.created_at
+                FROM historico_branco h
+                LEFT JOIN measurements m ON m.id = h.measurement_id;
+                DROP TABLE historico_branco;
+                ALTER TABLE historico_branco_v4 RENAME TO historico_branco;
+                """
+            )
+
+        measurement_columns = {
+            row["name"]
+            for row in connection.execute("PRAGMA table_info(measurements)")
+        }
+        if "dose_channel" in measurement_columns:
+            connection.execute(
+                "ALTER TABLE measurements DROP COLUMN dose_channel"
+            )
+
+        connection.executescript(
+            """
+            CREATE INDEX IF NOT EXISTS idx_historico_dose_dosimeter_time
+                ON historico_dose(dosimeter_id, time_dos DESC);
+            CREATE INDEX IF NOT EXISTS idx_historico_dose_time
+                ON historico_dose(time_dos DESC);
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_historico_dose_measurement
+                ON historico_dose(measurement_id)
+                WHERE measurement_id IS NOT NULL;
+            CREATE INDEX IF NOT EXISTS idx_historico_branco_dosimeter_time
+                ON historico_branco(dosimeter_id, time_bg DESC);
+            CREATE INDEX IF NOT EXISTS idx_historico_branco_time
+                ON historico_branco(time_bg DESC);
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_historico_branco_measurement
+                ON historico_branco(measurement_id)
+                WHERE measurement_id IS NOT NULL;
+            """
+        )
+        connection.execute(
+            """
+            UPDATE measurements
+            SET reading_type = COALESCE(reading_type, 'PERSONAL_DOSE')
+            WHERE test_mode = 'DOSIMETER_ID'
+            """
+        )
+        connection.execute(
+            """
+            INSERT OR IGNORE INTO historico_dose (
+                measurement_id, time_dos, dosimeter_id, dose_dos,
+                status_dos, created_at
+            )
+            SELECT id, measured_at, dosimeter_id, dose_msv,
+                   'Need to Erase', created_at
+            FROM measurements
+            WHERE test_mode = 'DOSIMETER_ID'
+              AND status = 'CONCLUIDO'
+              AND reading_type = 'PERSONAL_DOSE'
+              AND dosimeter_id IS NOT NULL
+            """
+        )
+        connection.execute(
+            """
+            INSERT OR IGNORE INTO historico_branco (
+                measurement_id, time_bg, dosimeter_id, dose_bg,
+                status_bg, created_at
+            )
+            SELECT id, measured_at, dosimeter_id, dose_msv,
+                   'Ready to Use', created_at
+            FROM measurements
+            WHERE test_mode = 'DOSIMETER_ID'
+              AND status = 'CONCLUIDO'
+              AND reading_type = 'BACKGROUND'
+              AND dosimeter_id IS NOT NULL
+            """
+        )
 
     def register_dosimeter(
         self,
@@ -629,11 +887,13 @@ class Database:
         dosimeter_id: str | None = None,
         *,
         test_mode: str | None = None,
+        reading_type: str | None = None,
         file_name: str = "",
         file_path: str | Path | None = None,
         count_01s: int = 0,
         current_ma: float = 0,
         light_mv: float = 0,
+        raw_signal: float = 0,
         dose_msv: float = 0,
         ecc_applied: float | None = None,
         rcf_applied: float | None = None,
@@ -651,6 +911,15 @@ class Database:
         )
         if mode not in VALID_TEST_MODES:
             raise ValueError("test_mode deve ser MANUAL ou DOSIMETER_ID")
+        clean_reading_type: str | None = None
+        if mode == "DOSIMETER_ID":
+            clean_reading_type = str(
+                reading_type or "PERSONAL_DOSE"
+            ).strip().upper()
+            if clean_reading_type not in VALID_READING_TYPES:
+                raise ValueError(
+                    "reading_type deve ser PERSONAL_DOSE ou BACKGROUND"
+                )
         clean_status = status.strip().upper()
         if clean_status not in VALID_MEASUREMENT_STATUSES:
             raise ValueError("status de medição inválido")
@@ -691,6 +960,7 @@ class Database:
             "count_01s": _count_value(count_01s),
             "current_ma": _non_negative_number(current_ma, "Current"),
             "light_mv": _non_negative_number(light_mv, "Light"),
+            "raw_signal": _non_negative_number(raw_signal, "Sinal bruto"),
             "dose_msv": _non_negative_number(dose_msv, "Dose"),
             "ecc_applied": _positive_number(ecc_applied, "ECC"),
             "rcf_applied": _positive_number(rcf_applied, "RCF"),
@@ -709,19 +979,22 @@ class Database:
             cursor = connection.execute(
                 """
                 INSERT INTO measurements (
-                    measured_at, test_mode, reader_id, dosimeter_id,
-                    file_name, file_path, count_01s, current_ma, light_mv,
-                    dose_msv, ecc_applied, rcf_applied, fang_applied,
+                    measured_at, test_mode, reading_type, reader_id,
+                    dosimeter_id, file_name, file_path,
+                    count_01s, current_ma, light_mv, raw_signal, dose_msv,
+                    ecc_applied, rcf_applied, fang_applied,
                     fenerg_applied, baseline_applied, status, notes,
                     created_at, updated_at
                 )
                 VALUES (
-                    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+                    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                    ?, ?, ?
                 )
                 """,
                 (
                     measurement_time,
                     mode,
+                    clean_reading_type,
                     clean_reader_id,
                     clean_dosimeter_id,
                     clean_file_name,
@@ -729,6 +1002,7 @@ class Database:
                     values["count_01s"],
                     values["current_ma"],
                     values["light_mv"],
+                    values["raw_signal"],
                     values["dose_msv"],
                     values["ecc_applied"],
                     values["rcf_applied"],
@@ -758,6 +1032,7 @@ class Database:
         count_01s: int | None = None,
         current_ma: float | None = None,
         light_mv: float | None = None,
+        raw_signal: float | None = None,
         dose_msv: float | None = None,
         file_path: str | Path | None = None,
         status: str | None = None,
@@ -770,6 +1045,11 @@ class Database:
             changes["current_ma"] = _non_negative_number(current_ma, "Current")
         if light_mv is not None:
             changes["light_mv"] = _non_negative_number(light_mv, "Light")
+        if raw_signal is not None:
+            changes["raw_signal"] = _non_negative_number(
+                raw_signal,
+                "Sinal bruto",
+            )
         if dose_msv is not None:
             changes["dose_msv"] = _non_negative_number(dose_msv, "Dose")
         if file_path is not None:
@@ -848,24 +1128,346 @@ class Database:
             ).fetchall()
         return [dict(row) for row in rows]
 
+    def sync_measurement_history(
+        self,
+        measurement_id: int,
+    ) -> dict[str, Any] | None:
+        """Copy one completed dosimeter acquisition into its typed history."""
+        clean_id = int(measurement_id)
+        with self.connect() as connection:
+            measurement = connection.execute(
+                "SELECT * FROM measurements WHERE id = ?",
+                (clean_id,),
+            ).fetchone()
+            if measurement is None:
+                raise ValueError("Medição não encontrada")
+            if (
+                measurement["test_mode"] != "DOSIMETER_ID"
+                or measurement["status"] != "CONCLUIDO"
+            ):
+                return None
+
+            reading_type = measurement["reading_type"] or "PERSONAL_DOSE"
+            if reading_type not in VALID_READING_TYPES:
+                raise ValueError("Tipo de leitura da medição é inválido")
+            dose = float(measurement["dose_msv"])
+
+            if reading_type == "PERSONAL_DOSE":
+                table = "historico_dose"
+                connection.execute(
+                    """
+                    INSERT OR IGNORE INTO historico_dose (
+                        measurement_id, time_dos, dosimeter_id, dose_dos,
+                        status_dos, created_at
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        clean_id,
+                        measurement["measured_at"],
+                        measurement["dosimeter_id"],
+                        dose,
+                        PERSONAL_DOSE_STATUS,
+                        utc_now(),
+                    ),
+                )
+            else:
+                table = "historico_branco"
+                connection.execute(
+                    """
+                    INSERT OR IGNORE INTO historico_branco (
+                        measurement_id, time_bg, dosimeter_id, dose_bg,
+                        status_bg, created_at
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        clean_id,
+                        measurement["measured_at"],
+                        measurement["dosimeter_id"],
+                        dose,
+                        BACKGROUND_STATUS,
+                        utc_now(),
+                    ),
+                )
+            row = connection.execute(
+                f"SELECT * FROM {table} WHERE measurement_id = ?",
+                (clean_id,),
+            ).fetchone()
+        return dict(row) if row else None
+
+    def add_personal_dose(
+        self,
+        dosimeter_id: str,
+        *,
+        dose_dos: float,
+        time_dos: datetime | str | None = None,
+        status_dos: str = PERSONAL_DOSE_STATUS,
+    ) -> int:
+        """Store a used dosimeter reading in ``historico_dose``."""
+        clean_id = normalize_dosimeter_id(dosimeter_id)
+        if self.get_dosimeter(clean_id) is None:
+            raise ValueError("Dosímetro não cadastrado")
+        clean_status = str(status_dos).strip()
+        if clean_status.casefold() != PERSONAL_DOSE_STATUS.casefold():
+            raise ValueError(
+                f"status_dos deve ser '{PERSONAL_DOSE_STATUS}'"
+            )
+        with self.connect() as connection:
+            cursor = connection.execute(
+                """
+                INSERT INTO historico_dose (
+                    time_dos, dosimeter_id, dose_dos, status_dos, created_at
+                )
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (
+                    normalize_datetime(time_dos),
+                    clean_id,
+                    _non_negative_number(dose_dos, "Dose"),
+                    PERSONAL_DOSE_STATUS,
+                    utc_now(),
+                ),
+            )
+            return int(cursor.lastrowid)
+
+    def get_personal_dose(self, record_id: int) -> dict[str, Any] | None:
+        with self.connect() as connection:
+            row = connection.execute(
+                "SELECT * FROM historico_dose WHERE id = ?",
+                (int(record_id),),
+            ).fetchone()
+        return dict(row) if row else None
+
+    def search_personal_doses(
+        self,
+        *,
+        dosimeter_id: str | None = None,
+        date_from: date | datetime | str | None = None,
+        date_to: date | datetime | str | None = None,
+        limit: int = 1000,
+    ) -> list[dict[str, Any]]:
+        clauses: list[str] = []
+        parameters: list[Any] = []
+        if isinstance(limit, bool) or not 1 <= int(limit) <= 10_000:
+            raise ValueError("limit deve estar entre 1 e 10000")
+        if dosimeter_id:
+            clauses.append("h.dosimeter_id = ?")
+            parameters.append(normalize_dosimeter_id(dosimeter_id))
+        if date_from is not None:
+            clauses.append("h.time_dos >= ?")
+            parameters.append(_filter_datetime(date_from, end_of_day=False))
+        if date_to is not None:
+            clauses.append("h.time_dos <= ?")
+            parameters.append(_filter_datetime(date_to, end_of_day=True))
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        parameters.append(int(limit))
+        with self.connect() as connection:
+            rows = connection.execute(
+                f"""
+                SELECT h.*
+                FROM historico_dose h
+                {where}
+                ORDER BY h.time_dos DESC, h.id DESC
+                LIMIT ?
+                """,
+                parameters,
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def add_background(
+        self,
+        dosimeter_id: str,
+        *,
+        dose_bg: float,
+        time_bg: datetime | str | None = None,
+        status_bg: str = BACKGROUND_STATUS,
+    ) -> int:
+        """Store a post-erasure reading in ``historico_branco``."""
+        clean_id = normalize_dosimeter_id(dosimeter_id)
+        if self.get_dosimeter(clean_id) is None:
+            raise ValueError("Dosímetro não cadastrado")
+        clean_status = str(status_bg).strip()
+        if clean_status.casefold() != BACKGROUND_STATUS.casefold():
+            raise ValueError(f"status_bg deve ser '{BACKGROUND_STATUS}'")
+        with self.connect() as connection:
+            cursor = connection.execute(
+                """
+                INSERT INTO historico_branco (
+                    time_bg, dosimeter_id, dose_bg, status_bg, created_at
+                )
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (
+                    normalize_datetime(time_bg),
+                    clean_id,
+                    _non_negative_number(dose_bg, "Dose de background"),
+                    BACKGROUND_STATUS,
+                    utc_now(),
+                ),
+            )
+            return int(cursor.lastrowid)
+
+    def get_background(self, record_id: int) -> dict[str, Any] | None:
+        with self.connect() as connection:
+            row = connection.execute(
+                "SELECT * FROM historico_branco WHERE id = ?",
+                (int(record_id),),
+            ).fetchone()
+        return dict(row) if row else None
+
+    def get_latest_background(
+        self,
+        dosimeter_id: str,
+        *,
+        at_time: datetime | str | None = None,
+    ) -> dict[str, Any] | None:
+        clean_id = normalize_dosimeter_id(dosimeter_id)
+        parameters: list[Any] = [clean_id]
+        time_clause = ""
+        if at_time is not None:
+            time_clause = "AND time_bg <= ?"
+            parameters.append(normalize_datetime(at_time))
+        with self.connect() as connection:
+            row = connection.execute(
+                f"""
+                SELECT *
+                FROM historico_branco
+                WHERE dosimeter_id = ? {time_clause}
+                ORDER BY time_bg DESC, id DESC
+                LIMIT 1
+                """,
+                parameters,
+            ).fetchone()
+        return dict(row) if row else None
+
+    def get_background_value(
+        self,
+        dosimeter_id: str,
+        *,
+        at_time: datetime | str | None = None,
+        default: float = 0.0,
+    ) -> float:
+        """Return the latest dose background or the configured default."""
+        fallback = _non_negative_number(default, "Background padrão")
+        record = self.get_latest_background(dosimeter_id, at_time=at_time)
+        if record is None:
+            return fallback
+        return float(record["dose_bg"])
+
+    def calculate_net_personal_dose(
+        self,
+        dosimeter_id: str,
+        reader_id: str,
+        *,
+        dose_reading: float,
+        measured_at: datetime | str | None = None,
+        default_background: float = 0.0,
+    ) -> dict[str, float]:
+        """Subtract the latest same-dosimeter background from a dose in mSv."""
+        measurement_time = normalize_datetime(measured_at)
+        measurement_date = measurement_time[:10]
+        dosimeter = self.get_valid_dosimeter_for_test(
+            dosimeter_id,
+            at_date=measurement_date,
+        )
+        reader = self.get_valid_reader_for_test(
+            reader_id,
+            at_date=measurement_date,
+        )
+        dose = _non_negative_number(dose_reading, "Leitura de dose")
+        background = self.get_background_value(
+            dosimeter["dosimeter_id"],
+            at_time=measurement_time,
+            default=default_background,
+        )
+        ecc = float(dosimeter["ecc"])
+        rcf = float(reader["rcf"])
+        return {
+            "dose_msv": max(0.0, dose - background),
+            "background_msv": background,
+            "ecc_applied": ecc,
+            "rcf_applied": rcf,
+        }
+
+    def search_backgrounds(
+        self,
+        *,
+        dosimeter_id: str | None = None,
+        date_from: date | datetime | str | None = None,
+        date_to: date | datetime | str | None = None,
+        limit: int = 1000,
+    ) -> list[dict[str, Any]]:
+        clauses: list[str] = []
+        parameters: list[Any] = []
+        if isinstance(limit, bool) or not 1 <= int(limit) <= 10_000:
+            raise ValueError("limit deve estar entre 1 e 10000")
+        if dosimeter_id:
+            clauses.append("h.dosimeter_id = ?")
+            parameters.append(normalize_dosimeter_id(dosimeter_id))
+        if date_from is not None:
+            clauses.append("h.time_bg >= ?")
+            parameters.append(_filter_datetime(date_from, end_of_day=False))
+        if date_to is not None:
+            clauses.append("h.time_bg <= ?")
+            parameters.append(_filter_datetime(date_to, end_of_day=True))
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        parameters.append(int(limit))
+        with self.connect() as connection:
+            rows = connection.execute(
+                f"""
+                SELECT h.*
+                FROM historico_branco h
+                {where}
+                ORDER BY h.time_bg DESC, h.id DESC
+                LIMIT ?
+                """,
+                parameters,
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    @staticmethod
+    def _export_rows(
+        destination: str | Path,
+        rows: Sequence[Mapping[str, Any]],
+        columns: Sequence[str],
+    ) -> Path:
+        output = Path(destination).expanduser().resolve()
+        output.parent.mkdir(parents=True, exist_ok=True)
+        with output.open("w", newline="", encoding="utf-8-sig") as file:
+            writer = csv.DictWriter(
+                file,
+                fieldnames=columns,
+                extrasaction="ignore",
+            )
+            writer.writeheader()
+            for row in rows:
+                writer.writerow(dict(row))
+        return output
+
+    def export_personal_doses_csv(
+        self,
+        destination: str | Path,
+        rows: Sequence[Mapping[str, Any]] | None = None,
+    ) -> Path:
+        data = list(rows) if rows is not None else self.search_personal_doses()
+        return self._export_rows(destination, data, PERSONAL_DOSE_COLUMNS)
+
+    def export_backgrounds_csv(
+        self,
+        destination: str | Path,
+        rows: Sequence[Mapping[str, Any]] | None = None,
+    ) -> Path:
+        data = list(rows) if rows is not None else self.search_backgrounds()
+        return self._export_rows(destination, data, BACKGROUND_COLUMNS)
+
     def export_csv(
         self,
         destination: str | Path,
         rows: Sequence[Mapping[str, Any]] | None = None,
     ) -> Path:
         data = list(rows) if rows is not None else self.search_measurements()
-        output = Path(destination).expanduser().resolve()
-        output.parent.mkdir(parents=True, exist_ok=True)
-        with output.open("w", newline="", encoding="utf-8-sig") as file:
-            writer = csv.DictWriter(
-                file,
-                fieldnames=MEASUREMENT_COLUMNS,
-                extrasaction="ignore",
-            )
-            writer.writeheader()
-            for row in data:
-                writer.writerow(dict(row))
-        return output
+        return self._export_rows(destination, data, MEASUREMENT_COLUMNS)
 
     def backup(self, destination: str | Path) -> Path:
         output = Path(destination).expanduser().resolve()
@@ -894,3 +1496,135 @@ class Database:
             target.close()
             source.close()
         return output
+
+    def import_database(
+        self,
+        source: str | Path,
+        *,
+        backup_destination: str | Path | None = None,
+    ) -> dict[str, Any]:
+        """Validate, migrate and import another application SQLite database."""
+        input_path = Path(source).expanduser().resolve()
+        if not input_path.is_file():
+            raise FileNotFoundError(f"Banco não encontrado: {input_path}")
+        if input_path == self.db_path:
+            raise ValueError("Selecione um banco diferente do banco atual")
+
+        required_tables = {"dosimeters", "readers", "measurements"}
+        with tempfile.TemporaryDirectory(prefix="osl_import_") as temp_dir:
+            candidate_path = Path(temp_dir) / "import_candidate.sqlite3"
+            source_connection = sqlite3.connect(
+                input_path,
+                timeout=self.busy_timeout_ms / 1000,
+            )
+            candidate_connection = sqlite3.connect(candidate_path)
+            try:
+                integrity = source_connection.execute(
+                    "PRAGMA integrity_check"
+                ).fetchone()
+                if integrity is None or integrity[0] != "ok":
+                    raise sqlite3.DatabaseError(
+                        "O arquivo selecionado não é um banco SQLite íntegro"
+                    )
+                tables = {
+                    row[0]
+                    for row in source_connection.execute(
+                        "SELECT name FROM sqlite_master WHERE type = 'table'"
+                    )
+                }
+                missing = required_tables - tables
+                if missing:
+                    raise ValueError(
+                        "Banco incompatível; tabelas ausentes: "
+                        + ", ".join(sorted(missing))
+                    )
+                source_connection.backup(candidate_connection)
+                candidate_connection.commit()
+            finally:
+                candidate_connection.close()
+                source_connection.close()
+
+            candidate = Database(
+                candidate_path,
+                busy_timeout_ms=self.busy_timeout_ms,
+            )
+            with candidate.connect() as connection:
+                integrity = connection.execute(
+                    "PRAGMA integrity_check"
+                ).fetchone()
+                if integrity is None or integrity[0] != "ok":
+                    raise sqlite3.DatabaseError(
+                        "Falha de integridade após migrar o banco importado"
+                    )
+                foreign_key_errors = connection.execute(
+                    "PRAGMA foreign_key_check"
+                ).fetchall()
+                if foreign_key_errors:
+                    raise sqlite3.IntegrityError(
+                        "O banco importado possui referências inválidas"
+                    )
+
+            if backup_destination is None:
+                backup_directory = self.db_path.parent.parent / "backups"
+                backup_name = datetime.now().strftime(
+                    "pre_import_%Y-%m-%d_%H-%M-%S_%f.sqlite3"
+                )
+                backup_path = backup_directory / backup_name
+            else:
+                backup_path = Path(backup_destination).expanduser().resolve()
+            backup_path = self.backup(backup_path)
+
+            try:
+                imported_source = sqlite3.connect(
+                    candidate_path,
+                    timeout=self.busy_timeout_ms / 1000,
+                )
+                current_target = sqlite3.connect(
+                    self.db_path,
+                    timeout=self.busy_timeout_ms / 1000,
+                )
+                try:
+                    imported_source.backup(current_target)
+                    current_target.commit()
+                finally:
+                    current_target.close()
+                    imported_source.close()
+
+                with self.connect() as connection:
+                    imported_integrity = connection.execute(
+                        "PRAGMA integrity_check"
+                    ).fetchone()
+                    if (
+                        imported_integrity is None
+                        or imported_integrity[0] != "ok"
+                    ):
+                        raise sqlite3.DatabaseError(
+                            "Falha de integridade ao instalar o banco importado"
+                        )
+                    if connection.execute(
+                        "PRAGMA foreign_key_check"
+                    ).fetchone() is not None:
+                        raise sqlite3.IntegrityError(
+                            "O banco importado possui referências inválidas"
+                        )
+            except Exception as import_error:
+                restore_source = sqlite3.connect(backup_path)
+                restore_target = sqlite3.connect(self.db_path)
+                try:
+                    restore_source.backup(restore_target)
+                    restore_target.commit()
+                except Exception as restore_error:
+                    raise RuntimeError(
+                        "A importação falhou e o backup automático não pôde "
+                        "ser restaurado"
+                    ) from restore_error
+                finally:
+                    restore_target.close()
+                    restore_source.close()
+                raise import_error
+
+        return {
+            "source": input_path,
+            "backup": backup_path,
+            "schema_version": SCHEMA_VERSION,
+        }

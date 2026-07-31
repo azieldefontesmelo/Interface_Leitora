@@ -126,6 +126,57 @@ class InterfaceModeTestCase(unittest.TestCase):
         self.bank.salvar_leitora()
         self.assertIn("sucesso", self.bank.reader_message)
         self.assertEqual(self.database.get_reader("READER-2")["rcf"], 0.5)
+        dosimeter_row = self.bank.ids.db_dosimeter_results.children[0]
+        reader_row = self.bank.ids.db_reader_results.children[0]
+        self.assertEqual(len(dosimeter_row.children), 5)
+        self.assertEqual(len(reader_row.children), 5)
+        self.assertIsNotNone(dosimeter_row.selection_callback)
+        self.assertIsNotNone(reader_row.selection_callback)
+        self.assertFalse(
+            any("|" in cell.text for cell in dosimeter_row.children)
+        )
+        self.assertFalse(any("|" in cell.text for cell in reader_row.children))
+
+        self.database.add_personal_dose(
+            "0123456789",
+            dose_dos=2.387,
+        )
+        self.database.add_background(
+            "0123456789",
+            dose_bg=1.912,
+        )
+        self.bank.pesquisar_doses_pessoais()
+        self.bank.pesquisar_backgrounds()
+        self.assertEqual(self.bank.personal_dose_count, "1 registros")
+        self.assertEqual(self.bank.background_count, "1 registros")
+        self.assertEqual(len(self.bank.ids.db_personal_dose_results.children), 1)
+        self.assertEqual(len(self.bank.ids.db_background_results.children), 1)
+        dataframe = self.bank._montar_dataframe_historico(
+            self.database.search_personal_doses(),
+            time_column="time_dos",
+            dose_column="dose_dos",
+            status_column="status_dos",
+        )
+        self.assertEqual(
+            list(dataframe.columns),
+            ["Data/hora", "Dosímetro", "Dose (mSv)", "Status"],
+        )
+        rendered_row = self.bank.ids.db_personal_dose_results.children[0]
+        self.assertEqual(len(rendered_row.children), 4)
+        self.assertFalse(
+            any("|" in cell.text for cell in rendered_row.children)
+        )
+
+    def test_filled_fields_validate_without_enter(self):
+        self.main.selecionar_modo("DOSIMETER_ID")
+        Clock.tick()
+        self.main.ids.reader_spinner.text = "3001A01"
+        self.main.ids.dosimeter_id_input.text = "0123456789"
+        Clock.tick()
+
+        self.assertTrue(self.main.start_allowed)
+        self.assertFalse(self.main.ids.start_button.disabled)
+        self.assertIn("pressione Start", self.main.dosimeter_status)
 
     def test_04_manual_acquisition_preserves_serial_and_history(self):
         self.main.selecionar_modo("MANUAL")
@@ -156,6 +207,12 @@ class InterfaceModeTestCase(unittest.TestCase):
         self.assertEqual(record["status"], "CONCLUIDO")
         self.assertTrue(Path(record["file_path"]).is_file())
         self.assertIsNone(self.main.current_measurement_id)
+        self.bank.pesquisar_historico()
+        history_row = self.bank.ids.db_history_results.children[0]
+        self.assertEqual(len(history_row.children), 6)
+        self.assertFalse(any("|" in cell.text for cell in history_row.children))
+        history_row.selection_callback(history_row.record)
+        self.assertIn(f"ID {measurement_id}", self.bank.history_details)
 
     def test_05_dosimeter_mode_uses_database_coefficients(self):
         self.main.selecionar_modo("DOSIMETER_ID")
@@ -177,6 +234,7 @@ class InterfaceModeTestCase(unittest.TestCase):
         self.assertEqual(record["test_mode"], "DOSIMETER_ID")
         self.assertEqual(record["dosimeter_id"], "0123456789")
         self.assertEqual(record["reader_id"], "3001A01")
+        self.assertEqual(record["reading_type"], "PERSONAL_DOSE")
         self.assertEqual(record["ecc_applied"], 1.25)
         self.assertEqual(record["rcf_applied"], 0.000033)
         self.assertAlmostEqual(
@@ -186,6 +244,30 @@ class InterfaceModeTestCase(unittest.TestCase):
         self.assertEqual(self.main.ids.dosimeter_id_input.text, "")
         Clock.tick()
         self.assertTrue(self.main.ids.dosimeter_id_input.focus)
+
+    def test_055_post_erase_reading_is_saved_as_background(self):
+        self.main.selecionar_modo("DOSIMETER_ID")
+        self.main.serial_connection = FakeSerial()
+        self.main.botao_apagar()
+        self.main.ids.reader_spinner.text = "3001A01"
+        self.main.ids.dosimeter_id_input.text = "0123456789"
+        self.assertTrue(self.main.confirmar_codigo_dosimetro())
+        self.main.automatic_file_name = "background-integration.txt"
+
+        self.main.botao_leitura()
+        measurement_id = self.main.current_measurement_id
+        self.assertIsNotNone(measurement_id)
+        self.main.processar_frame("#L1%A1733")
+        self.main.processar_frame("#L1%E45")
+        self.main.f_fechar_log = True
+        self.main.processar_frame("#L1%D471")
+
+        record = self.database.get_measurement(measurement_id)
+        self.assertEqual(record["reading_type"], "BACKGROUND")
+        background = self.database.get_latest_background("0123456789")
+        self.assertEqual(background["measurement_id"], measurement_id)
+        self.assertEqual(background["dose_bg"], record["dose_msv"])
+        self.assertEqual(self.main.reading_type, "PERSONAL_DOSE")
 
     def test_06_stop_marks_measurement_as_interrupted(self):
         self.main.selecionar_modo("MANUAL")

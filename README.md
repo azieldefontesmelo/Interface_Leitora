@@ -35,6 +35,7 @@ O programa trabalha em dois modos:
 - Kivy 2.3.1.
 - pyserial 3.5.
 - matplotlib 3.9.2.
+- pandas 3.0.5, usado para organizar tabelas, filtros, formatação de dados e exportações.
 
 O módulo `sqlite3` já faz parte da biblioteca padrão do Python.
 
@@ -142,7 +143,8 @@ O leitor funciona como teclado. Ao abrir a aba:
 
 1. O campo recebe foco automaticamente.
 2. O leitor envia os 10 dígitos.
-3. O Enter final executa a consulta.
+3. O Enter final executa a consulta. Se o ID completo e a leitora já estiverem
+   preenchidos, a consulta também é feita automaticamente.
 4. Espaços e caracteres de controle do scanner são removidos, sem alterar os
    dígitos.
 5. A consulta não inicia a aquisição; o operador ainda confirma em **Start**.
@@ -455,8 +457,10 @@ resolvidos a partir de `sys._MEIPASS`.
 
 ## Solução de problemas
 
-- **Start desabilitado no modo Dosímetro ID**: confira o cadastro, validade,
-  estado ativo e leitora selecionada.
+- **Start desabilitado no modo Dosímetro ID**: confira se o ID tem 10 dígitos,
+  a leitora foi selecionada e ambos os cadastros estão ativos e dentro da
+  validade. O Enter pode ser usado para validar o código, mas não é obrigatório
+  quando os campos já estão preenchidos.
 - **Arquivo já existe**: informe outro nome no modo Manual ou aguarde um novo
   segundo para gerar outro nome automático.
 - **Nenhuma porta serial encontrada**: conecte o equipamento ou crie o par de
