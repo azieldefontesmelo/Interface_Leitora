@@ -88,15 +88,15 @@ Guarda os dosímetros cadastrados pela janela `Novo dosímetro`.
 | `ID do dosímetro` | `dosimeter_id` | `TEXT`, chave primária, exatamente 10 dígitos |
 | `ECC` | `ecc` | `REAL`, padrão `1.0`, maior que zero |
 | `Data inicial` | `begin_date` | `TEXT`, data ISO `AAAA-MM-DD` |
-| `Data final` | `end_date` | `TEXT`, data ISO `AAAA-MM-DD` |
+| `Data final` | `end_date` | `TEXT`, data ISO `AAAA-MM-DD` ou `NULL` |
 | `Ativo` | `active` | `INTEGER`, `1` ativo e `0` inativo |
 | — | `created_at` | `TEXT`, data/hora UTC |
 | — | `updated_at` | `TEXT`, data/hora UTC |
 
 Regras do cadastro:
 
-- todos os campos mostrados na janela são obrigatórios;
-- `end_date` não pode ser anterior a `begin_date`;
+- `begin_date` é obrigatório;
+- `end_date` pode ficar vazia; quando preenchida, não pode ser anterior a `begin_date`;
 - o ID não pode se repetir;
 - o ECC é um fator de calibração e inicialmente pode valer `1.0`;
 - a interface pode mostrar `1,0000`, mas o Python deve gravar `1.0`;
@@ -185,11 +185,11 @@ CREATE TABLE IF NOT EXISTS dosimeters (
                  ),
     ecc          REAL NOT NULL DEFAULT 1.0 CHECK (ecc > 0),
     begin_date   TEXT NOT NULL,
-    end_date     TEXT NOT NULL,
+    end_date     TEXT,
     active       INTEGER NOT NULL DEFAULT 1 CHECK (active IN (0, 1)),
     created_at   TEXT NOT NULL,
     updated_at   TEXT NOT NULL,
-    CHECK (end_date >= begin_date)
+    CHECK (end_date IS NULL OR end_date >= begin_date)
 );
 
 CREATE TABLE IF NOT EXISTS readers (
@@ -310,7 +310,7 @@ class Database:
         *,
         ecc: float = 1.0,
         begin_date: date | str,
-        end_date: date | str,
+        end_date: date | str | None = None,
         active: bool = True,
     ) -> None:
         clean_id = normalize_dosimeter_id(dosimeter_id)
@@ -318,8 +318,8 @@ class Database:
             raise ValueError("ECC deve ser maior que zero")
 
         begin = normalize_date(begin_date)
-        end = normalize_date(end_date)
-        if end < begin:
+        end = normalize_date(end_date) if end_date not in (None, "") else None
+        if end is not None and end < begin:
             raise ValueError("a data final não pode ser anterior à data inicial")
 
         now = utc_now()
@@ -390,7 +390,7 @@ class Database:
         *,
         ecc: float,
         begin_date: date | str,
-        end_date: date | str,
+        end_date: date | str | None = None,
         active: bool,
     ) -> bool:
         clean_id = normalize_dosimeter_id(dosimeter_id)
@@ -398,8 +398,8 @@ class Database:
             raise ValueError("ECC deve ser maior que zero")
 
         begin = normalize_date(begin_date)
-        end = normalize_date(end_date)
-        if end < begin:
+        end = normalize_date(end_date) if end_date not in (None, "") else None
+        if end is not None and end < begin:
             raise ValueError("a data final não pode ser anterior à data inicial")
 
         with self.connect() as connection:
@@ -647,10 +647,9 @@ class Database:
                 raise ValueError("dosímetro não cadastrado")
             if not dosimeter["active"]:
                 raise ValueError("dosímetro inativo")
-            if not (
-                dosimeter["begin_date"]
-                <= measurement_date
-                <= dosimeter["end_date"]
+            if dosimeter["begin_date"] > measurement_date or (
+                dosimeter["end_date"] is not None
+                and measurement_date > dosimeter["end_date"]
             ):
                 raise ValueError("dosímetro fora do período de validade")
 

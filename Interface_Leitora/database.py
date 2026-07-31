@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any, Iterator, Mapping, Sequence
 
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 BUSY_TIMEOUT_MS = 10_000
 
 
@@ -95,11 +95,11 @@ CREATE TABLE IF NOT EXISTS dosimeters (
                  ),
     ecc          REAL NOT NULL CHECK (ecc > 0),
     begin_date   TEXT NOT NULL,
-    end_date     TEXT NOT NULL,
+    end_date     TEXT,
     active       INTEGER NOT NULL DEFAULT 1 CHECK (active IN (0, 1)),
     created_at   TEXT NOT NULL,
     updated_at   TEXT NOT NULL,
-    CHECK (end_date >= begin_date)
+    CHECK (end_date IS NULL OR end_date >= begin_date)
 );
 
 CREATE TABLE IF NOT EXISTS readers (
@@ -403,8 +403,9 @@ class Database:
             if current_version > SCHEMA_VERSION:
                 raise RuntimeError(
                     "O banco foi criado por uma versão mais nova da aplicação"
-                )
+            )
             connection.executescript(SCHEMA)
+            self._migrate_optional_dosimeter_end_date(connection)
             self._migrate_measurement_histories(connection)
             if current_version < SCHEMA_VERSION:
                 now = utc_now()
@@ -416,6 +417,58 @@ class Database:
                     (SCHEMA_VERSION, now),
                 )
                 connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
+
+    @staticmethod
+    def _migrate_optional_dosimeter_end_date(
+        connection: sqlite3.Connection,
+    ) -> None:
+        """Allow dosimeter validity to remain open-ended in old databases."""
+        columns = {
+            row["name"]: row
+            for row in connection.execute("PRAGMA table_info(dosimeters)")
+        }
+        end_date = columns.get("end_date")
+        if end_date is None or not end_date["notnull"]:
+            return
+
+        connection.execute("PRAGMA foreign_keys = OFF")
+        try:
+            connection.execute(
+                """
+                CREATE TABLE dosimeters_v5 (
+                    dosimeter_id TEXT PRIMARY KEY
+                                 CHECK (
+                                     length(dosimeter_id) = 10
+                                     AND dosimeter_id NOT GLOB '*[^0-9]*'
+                                 ),
+                    ecc          REAL NOT NULL CHECK (ecc > 0),
+                    begin_date   TEXT NOT NULL,
+                    end_date     TEXT,
+                    active       INTEGER NOT NULL DEFAULT 1
+                                 CHECK (active IN (0, 1)),
+                    created_at   TEXT NOT NULL,
+                    updated_at   TEXT NOT NULL,
+                    CHECK (end_date IS NULL OR end_date >= begin_date)
+                )
+                """
+            )
+            connection.execute(
+                """
+                INSERT INTO dosimeters_v5 (
+                    dosimeter_id, ecc, begin_date, end_date, active,
+                    created_at, updated_at
+                )
+                SELECT dosimeter_id, ecc, begin_date, end_date, active,
+                       created_at, updated_at
+                FROM dosimeters
+                """
+            )
+            connection.execute("DROP TABLE dosimeters")
+            connection.execute(
+                "ALTER TABLE dosimeters_v5 RENAME TO dosimeters"
+            )
+        finally:
+            connection.execute("PRAGMA foreign_keys = ON")
 
     @staticmethod
     def _migrate_measurement_histories(
@@ -598,14 +651,14 @@ class Database:
         *,
         ecc: float = 1.0,
         begin_date: date | datetime | str,
-        end_date: date | datetime | str,
+        end_date: date | datetime | str | None = None,
         active: bool = True,
     ) -> None:
         clean_id = normalize_dosimeter_id(dosimeter_id)
         clean_ecc = _positive_number(ecc, "ECC")
         begin = normalize_date(begin_date)
-        end = normalize_date(end_date)
-        if end < begin:
+        end = normalize_date(end_date) if end_date not in (None, "") else None
+        if end is not None and end < begin:
             raise ValueError("A data final não pode ser anterior à data inicial")
         now = utc_now()
         with self.connect() as connection:
@@ -661,14 +714,14 @@ class Database:
         *,
         ecc: float,
         begin_date: date | datetime | str,
-        end_date: date | datetime | str,
+        end_date: date | datetime | str | None = None,
         active: bool,
     ) -> bool:
         clean_id = normalize_dosimeter_id(dosimeter_id)
         clean_ecc = _positive_number(ecc, "ECC")
         begin = normalize_date(begin_date)
-        end = normalize_date(end_date)
-        if end < begin:
+        end = normalize_date(end_date) if end_date not in (None, "") else None
+        if end is not None and end < begin:
             raise ValueError("A data final não pode ser anterior à data inicial")
         with self.connect() as connection:
             cursor = connection.execute(
@@ -851,7 +904,10 @@ class Database:
             if at_date is not None
             else datetime.now(timezone.utc).date().isoformat()
         )
-        if not record["begin_date"] <= check_date <= record["end_date"]:
+        if record["begin_date"] > check_date or (
+            record["end_date"] is not None
+            and check_date > record["end_date"]
+        ):
             raise ValueError("Dosímetro fora do período de validade")
         _positive_number(record["ecc"], "ECC")
         return record

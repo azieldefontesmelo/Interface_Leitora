@@ -1587,7 +1587,7 @@ class TelaBancoDados(Screen):
         values = {
             "ecc": self.ids.db_dosimeter_ecc.text.replace(",", "."),
             "begin_date": self.ids.db_dosimeter_begin.text,
-            "end_date": self.ids.db_dosimeter_end.text,
+            "end_date": self.ids.db_dosimeter_end.text or None,
             "active": self.ids.db_dosimeter_active.active,
         }
         try:

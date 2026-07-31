@@ -7,12 +7,20 @@ __pycache__/
 CLAUDE.md
 /DosimetroOSL/
 /simulador/
+/PLANEJAMENTO_BANCO_DOSIMETROS.md
 
-# Artefatos gerados pelo conversor/plotador (regeneraveis a partir dos .txt)
-Interface_Leitora/assets/testes/**/*.csv
-Interface_Leitora/assets/testes/**/*.png
-Interface_Leitora/assets/testes/**/*.txt
-Interface_Leitora/assets/log/*.txt
+# Dados gerados pelo equipamento e pelo aplicativo; não versionar conteúdo
+Interface_Leitora/assets/database/**
+!Interface_Leitora/assets/database/.gitkeep
+Interface_Leitora/assets/log/**
+!Interface_Leitora/assets/log/.gitkeep
+Interface_Leitora/assets/testes/**
+!Interface_Leitora/assets/testes/.gitkeep
+
+# Cópias de dados gerados dentro do pacote de distribuição
+Interface_Leitora/dist/**/assets/database/**
+Interface_Leitora/dist/**/assets/log/**
+Interface_Leitora/dist/**/assets/testes/**
 
 # Banco local, arquivos auxiliares do WAL e exportações geradas pelo aplicativo
 Interface_Leitora/assets/database/*.sqlite3

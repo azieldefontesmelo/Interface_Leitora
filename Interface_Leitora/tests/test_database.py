@@ -13,6 +13,7 @@ from database import (
     MEASUREMENT_COLUMNS,
     PERSONAL_DOSE_COLUMNS,
     PERSONAL_DOSE_STATUS,
+    SCHEMA,
     SCHEMA_VERSION,
 )
 
@@ -151,6 +152,34 @@ class DatabaseTestCase(unittest.TestCase):
                 "0123456789",
                 at_date="2026-07-30",
             )
+
+    def test_dosimeter_end_date_is_optional(self):
+        self.database.register_dosimeter(
+            "0123456789",
+            ecc=1.25,
+            begin_date="2025-01-01",
+        )
+        self.assertIsNone(
+            self.database.get_dosimeter("0123456789")["end_date"]
+        )
+        self.assertIsNone(
+            self.database.get_valid_dosimeter_for_test(
+                "0123456789",
+                at_date="2099-12-31",
+            )["end_date"]
+        )
+        self.assertTrue(
+            self.database.update_dosimeter(
+                "0123456789",
+                ecc=1.25,
+                begin_date="2025-01-01",
+                end_date="",
+                active=True,
+            )
+        )
+        self.assertIsNone(
+            self.database.get_dosimeter("0123456789")["end_date"]
+        )
 
     def test_invalid_or_duplicate_dosimeter_is_rejected(self):
         for invalid_id in ("123", "12345678901", "12345A7890", "１２３４５６７８９０"):
@@ -578,6 +607,67 @@ class DatabaseTestCase(unittest.TestCase):
         self.assertIn("historico_branco", tables)
         self.assertEqual(version, SCHEMA_VERSION)
         self.assertNotIn("dose_channel", measurement_columns)
+
+    def test_legacy_dosimeter_end_date_constraint_is_migrated(self):
+        legacy_path = self.root / "legacy.sqlite3"
+        legacy_schema = SCHEMA.replace(
+            "    end_date     TEXT,\n",
+            "    end_date     TEXT NOT NULL,\n",
+            1,
+        ).replace(
+            "    CHECK (end_date IS NULL OR end_date >= begin_date)\n",
+            "    CHECK (end_date >= begin_date)\n",
+            1,
+        )
+        connection = sqlite3.connect(legacy_path)
+        try:
+            connection.executescript(legacy_schema)
+            connection.execute("PRAGMA user_version = 4")
+            connection.execute(
+                """
+                INSERT INTO dosimeters (
+                    dosimeter_id, ecc, begin_date, end_date, active,
+                    created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    "0123456789",
+                    1.25,
+                    "2025-01-01",
+                    "2030-01-01",
+                    1,
+                    "2026-01-01T00:00:00+00:00",
+                    "2026-01-01T00:00:00+00:00",
+                ),
+            )
+            connection.commit()
+        finally:
+            connection.close()
+
+        upgraded = Database(legacy_path)
+        with upgraded.connect() as connection:
+            end_date_column = next(
+                row
+                for row in connection.execute("PRAGMA table_info(dosimeters)")
+                if row["name"] == "end_date"
+            )
+            self.assertEqual(connection.execute("PRAGMA user_version").fetchone()[0], SCHEMA_VERSION)
+        self.assertEqual(end_date_column["notnull"], 0)
+        self.assertTrue(
+            upgraded.update_dosimeter(
+                "0123456789",
+                ecc=1.25,
+                begin_date="2025-01-01",
+                end_date=None,
+                active=True,
+            )
+        )
+        self.assertIsNone(
+            upgraded.get_valid_dosimeter_for_test(
+                "0123456789",
+                at_date="2099-12-31",
+            )["end_date"]
+        )
 
     def test_foreign_keys_prevent_history_loss(self):
         self.register_valid_records()

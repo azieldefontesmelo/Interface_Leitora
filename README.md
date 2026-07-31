@@ -250,7 +250,7 @@ O esquema é versionado com `PRAGMA user_version` e a tabela
 | `dosimeter_id` | texto com exatamente 10 dígitos |
 | `ecc` | fator maior que zero |
 | `begin_date` | início da validade |
-| `end_date` | fim da validade |
+| `end_date` | fim opcional da validade; vazio significa sem data final |
 | `active` | `1` ativo ou `0` inativo |
 | `created_at`, `updated_at` | auditoria em UTC |
 
@@ -292,7 +292,8 @@ usa ativação e desativação.
 - **Pesquisar** filtra pelo ID.
 - Clicar em um resultado carrega o registro para edição.
 
-Datas podem ser digitadas como `dd/mm/aaaa`.
+Datas podem ser digitadas como `dd/mm/aaaa`. A data final é opcional para
+dosímetros e leitoras; quando vazia, a validade permanece aberta.
 
 ### Aba Leitoras
 
