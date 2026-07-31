@@ -1,3 +1,4 @@
+import sqlite3
 import tempfile
 import traceback
 from collections import deque
@@ -12,12 +13,13 @@ from kivy.app import App
 from kivy.clock import Clock
 from kivy.core.window import Window
 from kivy.lang import Builder
-from kivy.properties import BooleanProperty, NumericProperty
+from kivy.properties import BooleanProperty, NumericProperty, StringProperty
 from kivy.uix.button import Button
 from kivy.uix.screenmanager import Screen
 from kivy.uix.popup import Popup
 from kivy.uix.label import Label
 from kivy.uix.boxlayout import BoxLayout
+from kivy.uix.filechooser import FileChooserListView
 from kivy.uix.image import Image
 from kivy.uix.textinput import TextInput
 from kivy.uix.widget import Widget
@@ -25,17 +27,24 @@ from kivy.graphics import Color, Line, Rectangle
 from kivy.uix.treeview import TreeView, TreeViewLabel, TreeViewNode
 
 from conversor import escrever_csv
+from database import Database
+from measurement_workflow import (
+    calculate_dose,
+    dosimeter_filename,
+    parse_number,
+    safe_test_filename,
+    scanner_text,
+)
 from Plot_grafico import gerar_grafico
-import os
 import sys
 
 def resource_path(relative_path):
     try:
-        base_path = sys._MEIPASS
+        base_path = Path(sys._MEIPASS)
     except AttributeError:
-        base_path = os.path.abspath(".")
+        base_path = Path(__file__).resolve().parent
 
-    return os.path.join(base_path, relative_path)
+    return str(base_path / relative_path)
 
 
 NomeArquivoBL = BoxLayout(orientation="vertical")
@@ -58,8 +67,12 @@ btn.bind(on_release=popupNomeArquivo.dismiss)
 BAUD_RATE = 115200
 PORTAS_SERIAL = []
 
-TESTES_DIR = Path(__file__).resolve().parent / "assets" / "testes"
-LOG_SERIAL_DIR = Path(__file__).resolve().parent / "assets" / "log"
+APPLICATION_DIR = Path(
+    getattr(sys, "_MEIPASS", Path(__file__).resolve().parent)
+)
+ASSETS_DIR = APPLICATION_DIR / "assets"
+TESTES_DIR = ASSETS_DIR / "testes"
+LOG_SERIAL_DIR = ASSETS_DIR / "log"
 
 COMANDOS_SUDO = {
     "leitura": "#S1%SC1001&",
@@ -627,6 +640,15 @@ class ArvoreArquivos(TreeView):
 
 
 class TelaPrincipalLeitora(Screen):
+    test_mode = StringProperty("MANUAL")
+    dosimeter_status = StringProperty(
+        "Aguardando leitura do código de barras"
+    )
+    start_allowed = BooleanProperty(False)
+    loaded_ecc = StringProperty("—")
+    loaded_rcf = StringProperty("—")
+    automatic_file_name = StringProperty("—")
+
     soma = 0
     contador = 0.1
     ecc = 1
@@ -650,6 +672,7 @@ class TelaPrincipalLeitora(Screen):
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
+        self.database = None
         self.caminho_arquivo = None
         self.serial_connection = None
         self.buffer_serial = ""
@@ -661,7 +684,12 @@ class TelaPrincipalLeitora(Screen):
         self.caminho_log_serial = None
         self.leitura_evento = None
         self.nova_linha = True
+        self.current_measurement_id = None
+        self.validated_dosimeter = None
+        self.validated_reader = None
+        self.applied_parameters = None
         Clock.schedule_once(self.atualizar_portas_serial, 0)
+        Clock.schedule_once(self.atualizar_leitoras_cadastradas, 0)
         # O tamanho do conteúdo do ScrollView só fica definitivo após o
         # primeiro ciclo de layout. Reposiciona no topo para não esconder os
         # controles de conexão em resoluções menores.
@@ -673,33 +701,260 @@ class TelaPrincipalLeitora(Screen):
         except KeyError:
             pass
 
-    # Log
-    def func_botao_log(self):
-        if not self.log_arquivo:
-            self.iniciar_log()
+    def obter_database(self):
+        if self.database is not None:
+            return self.database
+        aplicativo = App.get_running_app()
+        if aplicativo is None or not hasattr(aplicativo, "database"):
+            raise RuntimeError("Banco de dados não inicializado")
+        self.database = aplicativo.database
+        return self.database
 
-    def iniciar_log(self):
-        nome_arquivo = self.ids.nome_arquivo_input.text.strip()
-        if not nome_arquivo:
-            self.atualizar_status("Digite um nome para o arquivo.")
+    def selecionar_modo(self, mode):
+        normalized_mode = str(mode).strip().upper()
+        if normalized_mode not in ("MANUAL", "DOSIMETER_ID"):
+            raise ValueError("Modo de teste inválido")
+        if self.log_arquivo:
+            self.atualizar_status(
+                "Finalize ou interrompa a leitura antes de trocar o modo."
+            )
             return
+        self.test_mode = normalized_mode
+        self.start_allowed = normalized_mode == "MANUAL"
+        if normalized_mode == "DOSIMETER_ID":
+            self.atualizar_leitoras_cadastradas()
+            self._invalidar_dosimetro(
+                "Aguardando leitura do código de barras"
+            )
+            self.agendar_foco_dosimetro()
 
-        if not nome_arquivo.endswith(".txt"):
-            nome_arquivo += ".txt"
+    def agendar_foco_dosimetro(self, selecionar=True):
+        Clock.schedule_once(
+            lambda _dt: self._focar_dosimetro(selecionar),
+            0,
+        )
+
+    def _focar_dosimetro(self, selecionar):
+        if self.test_mode != "DOSIMETER_ID":
+            return
+        try:
+            field = self.ids.dosimeter_id_input
+        except KeyError:
+            return
+        field.focus = True
+        if selecionar and field.text:
+            field.select_all()
+
+    def dosimetro_texto_alterado(self, value):
+        if self.test_mode != "DOSIMETER_ID":
+            return
+        normalized = scanner_text(value)
+        current_id = (
+            self.validated_dosimeter["dosimeter_id"]
+            if self.validated_dosimeter
+            else None
+        )
+        if normalized != current_id:
+            self._invalidar_dosimetro(
+                "Pressione Enter para consultar o dosímetro",
+                preserve_filename=False,
+            )
+
+    def confirmar_codigo_dosimetro(self, value=None):
+        try:
+            field = self.ids.dosimeter_id_input
+        except KeyError:
+            return False
+        normalized = scanner_text(field.text if value is None else value)
+        field.text = normalized
+        try:
+            dosimeter = self.obter_database().get_valid_dosimeter_for_test(
+                normalized
+            )
+            reader_id = self.ids.reader_spinner.text.strip()
+            if reader_id in ("", "Selecione a leitora"):
+                raise ValueError("Selecione uma leitora antes de iniciar")
+            reader = self.obter_database().get_valid_reader_for_test(reader_id)
+        except (TypeError, ValueError) as error:
+            self._invalidar_dosimetro(str(error))
+            self.agendar_foco_dosimetro()
+            return False
+
+        self.validated_dosimeter = dosimeter
+        self.validated_reader = reader
+        self.loaded_ecc = self._formatar_coeficiente(dosimeter["ecc"])
+        self.loaded_rcf = self._formatar_coeficiente(reader["rcf"])
+        self.automatic_file_name = dosimeter_filename(normalized)
+        self.dosimeter_status = (
+            f"Dosímetro válido • leitora {reader['reader_id']} • "
+            "pressione Start para iniciar"
+        )
+        self.start_allowed = True
+        self.agendar_foco_dosimetro()
+        return True
+
+    def leitora_selecionada(self, _reader_id):
+        if self.test_mode == "DOSIMETER_ID":
+            try:
+                field = self.ids.dosimeter_id_input
+            except KeyError:
+                return
+            if scanner_text(field.text):
+                self.confirmar_codigo_dosimetro()
+
+    def atualizar_leitoras_cadastradas(self, *_args):
+        try:
+            spinner = self.ids.reader_spinner
+        except KeyError:
+            return
+        try:
+            readers = self.obter_database().search_readers(active=True)
+        except (OSError, sqlite3.Error, RuntimeError) as error:
+            self.atualizar_status(f"Erro ao carregar leitoras: {error}")
+            return
+        values = tuple(reader["reader_id"] for reader in readers)
+        previous = spinner.text
+        spinner.values = values
+        if previous in values:
+            spinner.text = previous
+        elif len(values) == 1:
+            spinner.text = values[0]
+        else:
+            spinner.text = "Selecione a leitora"
+
+    def preparar_proximo_dosimetro(self):
+        if self.test_mode != "DOSIMETER_ID":
+            return
+        try:
+            self.ids.dosimeter_id_input.text = ""
+        except KeyError:
+            pass
+        self._invalidar_dosimetro(
+            "Aguardando leitura do código de barras"
+        )
+        self.agendar_foco_dosimetro(selecionar=False)
+
+    def _invalidar_dosimetro(self, message, preserve_filename=False):
+        self.validated_dosimeter = None
+        self.validated_reader = None
+        self.loaded_ecc = "—"
+        self.loaded_rcf = "—"
+        if not preserve_filename:
+            self.automatic_file_name = "—"
+        self.dosimeter_status = message
+        self.start_allowed = False
+
+    @staticmethod
+    def _formatar_coeficiente(value):
+        return f"{float(value):.10g}"
+
+    def _preparar_contexto_teste(self):
+        baseline = parse_number(
+            self.ids.branco_textInput.text,
+            "Base Line",
+            positive=False,
+        )
+        fang = parse_number(
+            self.ids.fcal_textInput.text,
+            "Fang",
+            positive=True,
+        )
+        fenerg = parse_number(
+            self.ids.fenerg_textInput.text,
+            "Fenerg",
+            positive=True,
+        )
+
+        if self.test_mode == "MANUAL":
+            ecc = parse_number(
+                self.ids.ecc_textInput.text,
+                "ECC",
+                positive=True,
+            )
+            rcf = parse_number(
+                self.ids.rcf_textInput.text,
+                "RCF",
+                positive=True,
+            )
+            file_name = safe_test_filename(
+                self.ids.nome_arquivo_input.text
+            )
+            return {
+                "test_mode": "MANUAL",
+                "reader_id": None,
+                "dosimeter_id": None,
+                "file_name": file_name,
+                "ecc": ecc,
+                "rcf": rcf,
+                "fang": fang,
+                "fenerg": fenerg,
+                "baseline": baseline,
+            }
+
+        if not self.start_allowed or not (
+            self.validated_dosimeter and self.validated_reader
+        ):
+            if not self.confirmar_codigo_dosimetro():
+                raise ValueError(self.dosimeter_status)
+        file_name = safe_test_filename(self.automatic_file_name)
+        return {
+            "test_mode": "DOSIMETER_ID",
+            "reader_id": self.validated_reader["reader_id"],
+            "dosimeter_id": self.validated_dosimeter["dosimeter_id"],
+            "file_name": file_name,
+            "ecc": float(self.validated_dosimeter["ecc"]),
+            "rcf": float(self.validated_reader["rcf"]),
+            "fang": fang,
+            "fenerg": fenerg,
+            "baseline": baseline,
+        }
+
+    # Log
+    def func_botao_log(self, context=None):
+        if not self.log_arquivo:
+            self.iniciar_log(context)
+
+    def iniciar_log(self, context=None):
+        try:
+            context = context or self._preparar_contexto_teste()
+            nome_arquivo = safe_test_filename(context["file_name"])
+        except ValueError as error:
+            self.atualizar_status(str(error))
+            return False
 
         data_atual = datetime.now()
         testes_dia_dir = TESTES_DIR / data_atual.strftime("%Y/%m/%d")
         testes_dia_dir.mkdir(parents=True, exist_ok=True)
+        self.applied_parameters = dict(context)
 
         try:
-            self.caminho_arquivo = testes_dia_dir / nome_arquivo
+            self.current_measurement_id = self.obter_database().add_measurement(
+                reader_id=context["reader_id"],
+                dosimeter_id=context["dosimeter_id"],
+                test_mode=context["test_mode"],
+                file_name=nome_arquivo,
+                ecc_applied=context["ecc"],
+                rcf_applied=context["rcf"],
+                fang_applied=context["fang"],
+                fenerg_applied=context["fenerg"],
+                baseline_applied=context["baseline"],
+                status="EM_ANDAMENTO",
+            )
+
+            self.caminho_arquivo = (testes_dia_dir / nome_arquivo).resolve()
+            if not self.caminho_arquivo.is_relative_to(TESTES_DIR.resolve()):
+                raise ValueError("O arquivo deve permanecer em assets/testes")
             try:
                 self.log_arquivo = open(self.caminho_arquivo, "x", encoding="utf-8")
             except FileExistsError:
+                self._atualizar_medicao_com_erro("Arquivo já existe")
+                self.current_measurement_id = None
                 lbl_erro.text = "File Already Exists."
                 popupNomeArquivo.open()
-                print("Arquivo já existe")
-                return
+                self.atualizar_status(
+                    f"Arquivo já existe: {self.caminho_arquivo}"
+                )
+                return False
 
             self.log_arquivo.close()
             self.atualizar_status(f"Log iniciado em {self.caminho_arquivo}")
@@ -720,21 +975,42 @@ class TelaPrincipalLeitora(Screen):
             self.nova_linha = True
             self.ids.grafico_tempo_real.limpar()
             self.enviar_comando_sudo("leitura")
+            return True
 
-        except OSError as erro:
+        except (OSError, sqlite3.Error, TypeError, ValueError) as erro:
+            self._atualizar_medicao_com_erro(str(erro))
+            self.current_measurement_id = None
+            self.log_arquivo = None
             self.atualizar_status(f"Erro ao criar arquivo: {erro}")
+            return False
 
-    def fechar_log(self):
-        self.ids.nome_arquivo_input.text = ""
+    def fechar_log(self, status="CONCLUIDO", notes=None):
         if not self.log_arquivo:
             return
         nome = self.log_arquivo.name
-        self.atualizar_soma_no_log()
-        self.log_arquivo = open(self.caminho_arquivo, "a", encoding="utf-8")
-        self.log_arquivo.write(self.string_log)
-        self.log_arquivo.close()
-        self.log_arquivo = None
-        self.atualizar_status(f"Log encerrado: {nome}")
+        try:
+            dose = self.atualizar_soma_no_log()
+            self.log_arquivo = open(
+                self.caminho_arquivo,
+                "a",
+                encoding="utf-8",
+            )
+            self.log_arquivo.write(self.string_log)
+            self.log_arquivo.close()
+            self.log_arquivo = None
+            self._finalizar_medicao(status, dose, notes)
+            self.atualizar_status(f"Log encerrado: {nome}")
+        except (OSError, sqlite3.Error, TypeError, ValueError) as error:
+            self.log_arquivo = None
+            self._atualizar_medicao_com_erro(str(error))
+            self.atualizar_status(f"Erro ao finalizar leitura: {error}")
+        finally:
+            if self.test_mode == "MANUAL":
+                self.ids.nome_arquivo_input.text = ""
+            else:
+                self.preparar_proximo_dosimetro()
+            self.applied_parameters = None
+            self.current_measurement_id = None
 
     def salvar_log(self, mensagem):
         if self.log_arquivo:
@@ -744,8 +1020,7 @@ class TelaPrincipalLeitora(Screen):
 
     def atualizar_soma_no_log(self):
         if not self.log_arquivo:
-
-            return
+            return 0.0
 
         nome_arquivo = self.log_arquivo.name
         #self.log_arquivo.flush()
@@ -762,33 +1037,70 @@ class TelaPrincipalLeitora(Screen):
             linhas_string.append("\n")
 
 
+        dose = self.calcular_dose()
         linhas[2] = f"Soma: {self.soma}\n"
-        linhas[3] = f"Dose: {self.formatar_dose(self.calcular_dose())}\n"
+        linhas[3] = f"Dose: {self.formatar_dose(dose)}\n"
 
         linhas_string[2] = f"Soma: {self.soma}"
-        linhas_string[3] = f"Dose: {self.formatar_dose(self.calcular_dose())}"
+        linhas_string[3] = f"Dose: {self.formatar_dose(dose)}"
 
-        self.ids.label_dose.text = self.formatar_dose(self.calcular_dose())
+        self.ids.label_dose.text = self.formatar_dose(dose)
 
         self.string_log = "\n".join(linhas_string)
+        return dose
 
         #with open(nome_arquivo, "w", encoding="utf-8") as arquivo:
         #    arquivo.writelines(linhas)
 
     def calcular_dose(self):
-        return (
-            (self.soma - float(self.ids.branco_textInput.text.replace(',', '.')))
-            * float(self.ids.rcf_textInput.text.replace(',', '.'))
-            * float(self.ids.ecc_textInput.text.replace(',', '.'))
-            * float(self.ids.fcal_textInput.text.replace(',', '.'))
-            * float(self.ids.fenerg_textInput.text.replace(',', '.'))
+        context = self.applied_parameters
+        if context is None:
+            context = self._preparar_contexto_teste()
+        return calculate_dose(
+            self.soma,
+            baseline=context["baseline"],
+            rcf=context["rcf"],
+            ecc=context["ecc"],
+            fang=context["fang"],
+            fenerg=context["fenerg"],
         )
+
+    def _finalizar_medicao(self, status, dose, notes=None):
+        if self.current_measurement_id is None:
+            return
+        self.obter_database().update_measurement(
+            self.current_measurement_id,
+            count_01s=self.valor_count,
+            current_ma=self.valor_current,
+            light_mv=self.valor_light,
+            dose_msv=dose,
+            file_path=str(self.caminho_arquivo),
+            status=status,
+            notes=notes,
+        )
+
+    def _atualizar_medicao_com_erro(self, notes):
+        if self.current_measurement_id is None:
+            return
+        try:
+            self.obter_database().update_measurement(
+                self.current_measurement_id,
+                file_path=(
+                    str(self.caminho_arquivo)
+                    if self.caminho_arquivo is not None
+                    else None
+                ),
+                status="ERRO",
+                notes=notes,
+            )
+        except (sqlite3.Error, TypeError, ValueError):
+            traceback.print_exc()
 
     @staticmethod
     def formatar_dose(valor):
-        """Usa tres casas para valores menores que 1 e duas nos demais."""
+        """Usa tres casas para valores menores que 1 e nenhuma nos demais."""
         valor = float(valor)
-        return f"{valor:.3f}" if abs(valor) < 1 else f"{valor:.3f}"
+        return f"{valor:.3f}" if abs(valor) < 1 else f"{valor:.0f}"
 
     # Serial
     def _iniciar_log_serial(self, porta):
@@ -883,6 +1195,11 @@ class TelaPrincipalLeitora(Screen):
             self.atualizar_status(f"Erro ao conectar: {erro}")
 
     def desconectar_serial(self, atualizar_botao=True):
+        if self.log_arquivo:
+            self.fechar_log(
+                status="INTERROMPIDO",
+                notes="Conexão serial encerrada durante a leitura",
+            )
         if self.leitura_evento:
             self.leitura_evento.cancel()
             self.leitura_evento = None
@@ -914,6 +1231,8 @@ class TelaPrincipalLeitora(Screen):
         except serial.SerialException as erro:
             self._registrar_log_serial("ERRO TX", erro)
             self.atualizar_status(f"Erro ao enviar: {erro}")
+            if self.log_arquivo:
+                self.fechar_log(status="ERRO", notes=str(erro))
 
     def ler_serial(self, dt):
         if not self.serial_aberta():
@@ -937,6 +1256,8 @@ class TelaPrincipalLeitora(Screen):
         except serial.SerialException as erro:
             self._registrar_log_serial("ERRO RX", erro)
             self.atualizar_status(f"Erro na leitura serial: {erro}")
+            if self.log_arquivo:
+                self.fechar_log(status="ERRO", notes=str(erro))
 
     def processar_frame(self, frame):
         self.ids.recebido_label.text = f"Recebido: {frame}&"
@@ -945,11 +1266,11 @@ class TelaPrincipalLeitora(Screen):
         # O frame D fecha a amostra (ultima coluna); os demais sao colunas
         # intermediarias. Cada linha comeca pelo Tempo (ver registrar_valor).
         if frame.startswith("#L1%D"):
-            self.registrar_valor(frame, fim_linha=True)
             valor = int(frame[5:])
             self.valor_light = valor
             self.ids.label_light.text = f"{valor}"
             self.soma_luz += valor
+            self.registrar_valor(frame, fim_linha=True)
             self.atualizar_grafico_tempo_real()
             if self.f_luz_ref:
                 print("luz_ref")
@@ -1018,23 +1339,39 @@ class TelaPrincipalLeitora(Screen):
 
     # Comandos
     def botao_leitura(self):
+        if self.log_arquivo:
+            self.atualizar_status("Já existe uma leitura em andamento.")
+            return
         self.string_log = ""
         self.ids.label_dose.text = "0.000"
         self.ids.label_current.text = "0"
         self.ids.label_light.text = "0"
         self.ids.label_count.text = "0"
         self.f_luz_ref = False
+        try:
+            context = self._preparar_contexto_teste()
+        except (TypeError, ValueError) as error:
+            self.atualizar_status(str(error))
+            lbl_erro.text = str(error)
+            popupNomeArquivo.open()
+            if self.test_mode == "DOSIMETER_ID":
+                self.agendar_foco_dosimetro()
+            return
         if not self.serial_aberta():
             self.atualizar_status("Serial desconectada. Verifique a porta.")
             lbl_erro.text = "Connect to OSL System!"
             popupNomeArquivo.open()
         else:
-            if not self.ids.nome_arquivo_input.text == "":
-                self.ids.LabelDose.text = "Dose (mSv)"
-                self.func_botao_log()
-            else:
-                lbl_erro.text = "Empty File Name!"
-                popupNomeArquivo.open()
+            self.ids.LabelDose.text = "Dose (mSv)"
+            self.func_botao_log(context)
+
+    def botao_stop(self):
+        self.enviar_comando_sudo("stop")
+        if self.log_arquivo:
+            self.fechar_log(
+                status="INTERROMPIDO",
+                notes="Leitura interrompida pelo operador",
+            )
 
     def botao_ref_light(self):
         self.ids.label_dose.text = "0.000"
@@ -1112,6 +1449,395 @@ class TelaPrincipalLeitora(Screen):
 
 class TelaParametrosLeitura(Screen):
     pass
+
+
+class TelaBancoDados(Screen):
+    dosimeter_message = StringProperty("")
+    reader_message = StringProperty("")
+    history_message = StringProperty("")
+    history_count = StringProperty("0 registros")
+    history_details = StringProperty(
+        "Selecione uma medição para visualizar os parâmetros aplicados."
+    )
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.database = None
+        self._editing_dosimeter_id = None
+        self._editing_reader_id = None
+        self._history_rows = []
+
+    def obter_database(self):
+        if self.database is not None:
+            return self.database
+        aplicativo = App.get_running_app()
+        if aplicativo is None or not hasattr(aplicativo, "database"):
+            raise RuntimeError("Banco de dados não inicializado")
+        self.database = aplicativo.database
+        return self.database
+
+    def on_pre_enter(self, *_args):
+        self.pesquisar_dosimetros()
+        self.pesquisar_leitoras()
+        self.pesquisar_historico()
+
+    def novo_dosimetro(self):
+        self._editing_dosimeter_id = None
+        for field_id in (
+            "db_dosimeter_id",
+            "db_dosimeter_ecc",
+            "db_dosimeter_begin",
+            "db_dosimeter_end",
+        ):
+            self.ids[field_id].text = ""
+        self.ids.db_dosimeter_id.disabled = False
+        self.ids.db_dosimeter_active.active = True
+        self.dosimeter_message = "Novo cadastro"
+
+    def salvar_dosimetro(self):
+        dosimeter_id = self.ids.db_dosimeter_id.text
+        values = {
+            "ecc": self.ids.db_dosimeter_ecc.text.replace(",", "."),
+            "begin_date": self.ids.db_dosimeter_begin.text,
+            "end_date": self.ids.db_dosimeter_end.text,
+            "active": self.ids.db_dosimeter_active.active,
+        }
+        try:
+            if self._editing_dosimeter_id is None:
+                self.obter_database().register_dosimeter(
+                    dosimeter_id,
+                    **values,
+                )
+                message = "Dosímetro cadastrado com sucesso"
+            else:
+                if dosimeter_id.strip() != self._editing_dosimeter_id:
+                    raise ValueError("O ID do dosímetro não pode ser alterado")
+                if not self.obter_database().update_dosimeter(
+                    dosimeter_id,
+                    **values,
+                ):
+                    raise ValueError("Dosímetro não encontrado")
+                message = "Dosímetro atualizado com sucesso"
+        except sqlite3.IntegrityError:
+            message = "Dosímetro já cadastrado"
+        except (TypeError, ValueError, sqlite3.Error) as error:
+            message = str(error)
+        self.dosimeter_message = message
+        self.pesquisar_dosimetros()
+
+    def pesquisar_dosimetros(self):
+        try:
+            rows = self.obter_database().search_dosimeters(
+                text=self.ids.db_dosimeter_search.text
+            )
+        except (sqlite3.Error, RuntimeError, ValueError) as error:
+            self.dosimeter_message = f"Erro na pesquisa: {error}"
+            return
+        container = self.ids.db_dosimeter_results
+        container.clear_widgets()
+        for record in rows:
+            active = "Ativo" if record["active"] else "Inativo"
+            button = Button(
+                text=(
+                    f"{record['dosimeter_id']}   |   ECC {record['ecc']:.10g}"
+                    f"   |   {record['begin_date']} → {record['end_date']}"
+                    f"   |   {active}"
+                ),
+                size_hint_y=None,
+                height="36dp",
+                halign="left",
+            )
+            button.bind(
+                on_release=lambda _button, row=record: self.selecionar_dosimetro(
+                    row
+                )
+            )
+            container.add_widget(button)
+
+    def selecionar_dosimetro(self, record):
+        self._editing_dosimeter_id = record["dosimeter_id"]
+        self.ids.db_dosimeter_id.text = record["dosimeter_id"]
+        self.ids.db_dosimeter_id.disabled = True
+        self.ids.db_dosimeter_ecc.text = f"{record['ecc']:.10g}"
+        self.ids.db_dosimeter_begin.text = self._date_for_display(
+            record["begin_date"]
+        )
+        self.ids.db_dosimeter_end.text = self._date_for_display(
+            record["end_date"]
+        )
+        self.ids.db_dosimeter_active.active = bool(record["active"])
+        self.dosimeter_message = "Dosímetro selecionado para edição"
+
+    def alternar_dosimetro(self):
+        dosimeter_id = self.ids.db_dosimeter_id.text
+        try:
+            record = self.obter_database().get_dosimeter(dosimeter_id)
+            if record is None:
+                raise ValueError("Dosímetro não encontrado")
+            active = not bool(record["active"])
+            self.obter_database().set_dosimeter_active(dosimeter_id, active)
+            self.ids.db_dosimeter_active.active = active
+            self.dosimeter_message = (
+                "Dosímetro ativado" if active else "Dosímetro desativado"
+            )
+            self.pesquisar_dosimetros()
+        except (TypeError, ValueError, sqlite3.Error) as error:
+            self.dosimeter_message = str(error)
+
+    def nova_leitora(self):
+        self._editing_reader_id = None
+        for field_id in (
+            "db_reader_id",
+            "db_reader_rcf",
+            "db_reader_begin",
+            "db_reader_end",
+        ):
+            self.ids[field_id].text = ""
+        self.ids.db_reader_id.disabled = False
+        self.ids.db_reader_active.active = True
+        self.reader_message = "Novo cadastro"
+
+    def salvar_leitora(self):
+        reader_id = self.ids.db_reader_id.text
+        values = {
+            "rcf": self.ids.db_reader_rcf.text.replace(",", "."),
+            "begin_date": self.ids.db_reader_begin.text,
+            "end_date": self.ids.db_reader_end.text or None,
+            "active": self.ids.db_reader_active.active,
+        }
+        try:
+            if self._editing_reader_id is None:
+                self.obter_database().register_reader(reader_id, **values)
+                message = "Leitora cadastrada com sucesso"
+            else:
+                if reader_id.strip() != self._editing_reader_id:
+                    raise ValueError("O ID da leitora não pode ser alterado")
+                if not self.obter_database().update_reader(reader_id, **values):
+                    raise ValueError("Leitora não encontrada")
+                message = "Leitora atualizada com sucesso"
+        except sqlite3.IntegrityError:
+            message = "Leitora já cadastrada"
+        except (TypeError, ValueError, sqlite3.Error) as error:
+            message = str(error)
+        self.reader_message = message
+        self.pesquisar_leitoras()
+        self._refresh_main_readers()
+
+    def pesquisar_leitoras(self):
+        try:
+            rows = self.obter_database().search_readers(
+                text=self.ids.db_reader_search.text
+            )
+        except (sqlite3.Error, RuntimeError, ValueError) as error:
+            self.reader_message = f"Erro na pesquisa: {error}"
+            return
+        container = self.ids.db_reader_results
+        container.clear_widgets()
+        for record in rows:
+            active = "Ativa" if record["active"] else "Inativa"
+            end_date = record["end_date"] or "sem término"
+            button = Button(
+                text=(
+                    f"{record['reader_id']}   |   RCF {record['rcf']:.10g}"
+                    f"   |   {record['begin_date']} → {end_date}"
+                    f"   |   {active}"
+                ),
+                size_hint_y=None,
+                height="36dp",
+                halign="left",
+            )
+            button.bind(
+                on_release=lambda _button, row=record: self.selecionar_leitora(
+                    row
+                )
+            )
+            container.add_widget(button)
+
+    def selecionar_leitora(self, record):
+        self._editing_reader_id = record["reader_id"]
+        self.ids.db_reader_id.text = record["reader_id"]
+        self.ids.db_reader_id.disabled = True
+        self.ids.db_reader_rcf.text = f"{record['rcf']:.10g}"
+        self.ids.db_reader_begin.text = self._date_for_display(
+            record["begin_date"]
+        )
+        self.ids.db_reader_end.text = self._date_for_display(
+            record["end_date"]
+        )
+        self.ids.db_reader_active.active = bool(record["active"])
+        self.reader_message = "Leitora selecionada para edição"
+
+    def alternar_leitora(self):
+        reader_id = self.ids.db_reader_id.text
+        try:
+            record = self.obter_database().get_reader(reader_id)
+            if record is None:
+                raise ValueError("Leitora não encontrada")
+            active = not bool(record["active"])
+            self.obter_database().set_reader_active(reader_id, active)
+            self.ids.db_reader_active.active = active
+            self.reader_message = (
+                "Leitora ativada" if active else "Leitora desativada"
+            )
+            self.pesquisar_leitoras()
+            self._refresh_main_readers()
+        except (TypeError, ValueError, sqlite3.Error) as error:
+            self.reader_message = str(error)
+
+    def pesquisar_historico(self):
+        mode = self.ids.db_history_mode.text
+        try:
+            self._history_rows = self.obter_database().search_measurements(
+                dosimeter_id=self.ids.db_history_dosimeter.text or None,
+                reader_id=self.ids.db_history_reader.text or None,
+                test_mode=None if mode == "Todos" else mode,
+                date_from=self.ids.db_history_from.text or None,
+                date_to=self.ids.db_history_to.text or None,
+            )
+        except (TypeError, ValueError, sqlite3.Error, RuntimeError) as error:
+            self.history_message = f"Erro na pesquisa: {error}"
+            return
+        self.history_count = f"{len(self._history_rows)} registros"
+        container = self.ids.db_history_results
+        container.clear_widgets()
+        for record in self._history_rows:
+            button = Button(
+                text=(
+                    f"{self._display_datetime(record['measured_at'])} | "
+                    f"{record['dosimeter_id'] or '—'} | "
+                    f"{record['reader_id'] or '—'} | "
+                    f"{record['test_mode']} | "
+                    f"{record['dose_msv']:.10g} | {record['status']}"
+                ),
+                size_hint_y=None,
+                height="36dp",
+                halign="left",
+            )
+            button.bind(
+                on_release=lambda _button, row=record: self.mostrar_medicao(row)
+            )
+            container.add_widget(button)
+        self.history_message = "Pesquisa concluída"
+
+    def mostrar_medicao(self, record):
+        self.history_details = (
+            f"ID {record['id']} • {record['file_name'] or 'sem arquivo'}\n"
+            f"Count: {record['count_01s']}   Current: {record['current_ma']:.10g}"
+            f"   Light: {record['light_mv']:.10g}"
+            f"   Dose: {record['dose_msv']:.10g}\n"
+            f"ECC: {record['ecc_applied']:.10g}   "
+            f"RCF: {record['rcf_applied']:.10g}   "
+            f"Fang: {record['fang_applied']:.10g}   "
+            f"Fenerg: {record['fenerg_applied']:.10g}   "
+            f"Base Line: {record['baseline_applied']:.10g}\n"
+            f"Caminho: {record['file_path'] or '—'}\n"
+            f"Observação: {record['notes'] or '—'}"
+        )
+
+    def exportar_csv_historico(self):
+        try:
+            if not self._history_rows:
+                self.pesquisar_historico()
+            output = (
+                ASSETS_DIR
+                / "exports"
+                / datetime.now().strftime(
+                    "measurements_%Y-%m-%d_%H-%M-%S_%f.csv"
+                )
+            )
+            result = self.obter_database().export_csv(
+                output,
+                self._history_rows,
+            )
+            self.history_message = f"CSV exportado para {result}"
+            return result
+        except (OSError, sqlite3.Error, ValueError) as error:
+            self.history_message = f"Erro ao exportar CSV: {error}"
+            return None
+
+    def abrir_dialogo_backup(self):
+        backup_directory = ASSETS_DIR / "backups"
+        backup_directory.mkdir(parents=True, exist_ok=True)
+        content = BoxLayout(orientation="vertical", spacing=8, padding=8)
+        chooser = FileChooserListView(
+            path=str(backup_directory),
+            dirselect=True,
+        )
+        file_name = TextInput(
+            text=datetime.now().strftime(
+                "measurements_backup_%Y-%m-%d_%H-%M-%S.sqlite3"
+            ),
+            multiline=False,
+            size_hint_y=None,
+            height="38dp",
+        )
+        actions = BoxLayout(size_hint_y=None, height="42dp", spacing=8)
+        cancel = Button(text="Cancelar")
+        save = Button(text="Criar backup")
+        actions.add_widget(cancel)
+        actions.add_widget(save)
+        content.add_widget(chooser)
+        content.add_widget(file_name)
+        content.add_widget(actions)
+        popup = Popup(
+            title="Escolha o destino do backup",
+            content=content,
+            size_hint=(0.85, 0.85),
+        )
+        cancel.bind(on_release=popup.dismiss)
+        save.bind(
+            on_release=lambda *_args: self._confirmar_backup(
+                popup,
+                chooser,
+                file_name.text,
+            )
+        )
+        popup.open()
+
+    def _confirmar_backup(self, popup, chooser, file_name):
+        selected = Path(chooser.selection[0]) if chooser.selection else None
+        directory = (
+            selected
+            if selected is not None and selected.is_dir()
+            else Path(chooser.path)
+        )
+        try:
+            clean_name = str(file_name).strip()
+            if (
+                not clean_name
+                or Path(clean_name).name != clean_name
+                or clean_name in (".", "..")
+            ):
+                raise ValueError("Nome de backup inválido")
+            if not clean_name.lower().endswith(".sqlite3"):
+                clean_name += ".sqlite3"
+            result = self.criar_backup(directory / clean_name)
+        except (OSError, sqlite3.Error, ValueError) as error:
+            self.history_message = f"Erro ao criar backup: {error}"
+            return
+        popup.dismiss()
+        self.history_message = f"Backup exportado para {result}"
+
+    def criar_backup(self, destination):
+        return self.obter_database().backup(destination)
+
+    def _refresh_main_readers(self):
+        if self.manager and self.manager.has_screen("main"):
+            self.manager.get_screen("main").atualizar_leitoras_cadastradas()
+
+    @staticmethod
+    def _date_for_display(value):
+        if not value:
+            return ""
+        return datetime.strptime(value, "%Y-%m-%d").strftime("%d/%m/%Y")
+
+    @staticmethod
+    def _display_datetime(value):
+        try:
+            parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+            return parsed.astimezone().strftime("%d/%m/%Y %H:%M:%S")
+        except (AttributeError, ValueError):
+            return str(value)
 
 
 class TelaGraficos(Screen):
@@ -1285,7 +2011,12 @@ class AplicativoInterfaceOSL(App):
     title = "OSLMeter V4.0"
 
     def build(self):
-        return Builder.load_file(resource_path("interface_OSL.kv"))
+        if not hasattr(self, "database") or self.database is None:
+            self.database = Database()
+        root = Builder.load_file(resource_path("interface_OSL.kv"))
+        root.get_screen("main").database = self.database
+        root.get_screen("banco_dados").database = self.database
+        return root
 
     def trocar_para_graficos(self):
         self.root.transition.direction = "up"
@@ -1294,12 +2025,17 @@ class AplicativoInterfaceOSL(App):
     def on_stop(self):
         main = self.root.get_screen("main")
         if main.log_arquivo:
-            main.log_arquivo.close()
+            main.fechar_log(
+                status="INTERROMPIDO",
+                notes="Aplicação encerrada durante a leitura",
+            )
 
         main.desconectar_serial(atualizar_botao=False)
 
 
 def main():
+    Window.minimum_width = 900
+    Window.minimum_height = 650
     Window.maximize()
     AplicativoInterfaceOSL().run()
 

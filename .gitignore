@@ -11,3 +11,12 @@ CLAUDE.md
 # Artefatos gerados pelo conversor/plotador (regeneraveis a partir dos .txt)
 Interface_Leitora/assets/testes/**/*.csv
 Interface_Leitora/assets/testes/**/*.png
+Interface_Leitora/assets/testes/**/*.txt
+Interface_Leitora/assets/log/*.txt
+
+# Banco local, arquivos auxiliares do WAL e exportações geradas pelo aplicativo
+Interface_Leitora/assets/database/*.sqlite3
+Interface_Leitora/assets/database/*.sqlite3-shm
+Interface_Leitora/assets/database/*.sqlite3-wal
+Interface_Leitora/assets/backups/*.sqlite3
+Interface_Leitora/assets/exports/*.csv

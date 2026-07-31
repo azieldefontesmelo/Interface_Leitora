@@ -1,10 +1,165 @@
 #:kivy 1.11.1
 #:import dp kivy.metrics.dp
+#:import NoTransition kivy.uix.screenmanager.NoTransition
+#:import Window kivy.core.window.Window
+
+<BotaoBarraLateral@Button>:
+    selecionado: False
+    size_hint: None, None
+    size: "55dp", "50dp"
+    text: ""
+    background_normal: ""
+    background_down: ""
+    background_color: (0.22, 0.22, 0.22, 1) if self.selecionado else (0.10, 0.10, 0.10, 1)
+
+    canvas.before:
+        Color:
+            rgba: (0.82, 0.82, 0.82, 1) if self.selecionado else (0, 0, 0, 0)
+        Rectangle:
+            pos: self.x, self.y + dp(8)
+            size: dp(3), self.height - dp(16)
+
+
+<BarraLateral@BoxLayout>:
+    tela_ativa: ""
+    orientation: "vertical"
+    size_hint: None, 1
+    width: "56dp"
+    spacing: 2
+
+    canvas.before:
+        Color:
+            rgba: 0.10, 0.10, 0.10, 1
+        Rectangle:
+            pos: self.pos
+            size: self.size
+    canvas.after:
+        Color:
+            rgba: 0.28, 0.28, 0.28, 1
+        Line:
+            points: self.right, self.y, self.right, self.top
+            width: 1
+
+    Widget:
+        size_hint_y: None
+        height: "8dp"
+
+    BotaoBarraLateral:
+        selecionado: root.tela_ativa == "main"
+        on_release: app.root.current = "main"
+
+        canvas.after:
+            Color:
+                rgba: (0.95, 0.95, 0.95, 1) if self.selecionado else (0.62, 0.62, 0.62, 1)
+            Rectangle:
+                source: "assets/UI/sidebar/radiation.png"
+                size: dp(34), dp(34)
+                pos: self.center_x - dp(17), self.center_y - dp(17)
+
+    BotaoBarraLateral:
+        selecionado: root.tela_ativa == "banco_dados"
+        on_release: app.root.current = "banco_dados"
+
+        canvas.after:
+            Color:
+                rgba: (0.95, 0.95, 0.95, 1) if self.selecionado else (0.62, 0.62, 0.62, 1)
+            Rectangle:
+                source: "assets/UI/sidebar/database.png"
+                size: dp(34), dp(34)
+                pos: self.center_x - dp(17), self.center_y - dp(17)
+
+    BotaoBarraLateral:
+        selecionado: root.tela_ativa == "graficos"
+        on_release: app.root.current = "graficos"
+
+        canvas.after:
+            Color:
+                rgba: (0.95, 0.95, 0.95, 1) if self.selecionado else (0.62, 0.62, 0.62, 1)
+            Rectangle:
+                source: "assets/UI/sidebar/chart-no-axes-combined.png"
+                size: dp(34), dp(34)
+                pos: self.center_x - dp(17), self.center_y - dp(17)
+
+    BotaoBarraLateral:
+        selecionado: root.tela_ativa == "parametros"
+        on_release: app.root.current = "parametros"
+
+        canvas.after:
+            Color:
+                rgba: (0.95, 0.95, 0.95, 1) if self.selecionado else (0.62, 0.62, 0.62, 1)
+            Rectangle:
+                source: "assets/UI/sidebar/sliders-horizontal.png"
+                size: dp(34), dp(34)
+                pos: self.center_x - dp(17), self.center_y - dp(17)
+
+    Widget:
+
+    BotaoBarraLateral:
+        canvas.after:
+            Color:
+                rgba: 0.62, 0.62, 0.62, 1
+            Rectangle:
+                source: "assets/UI/sidebar/info.png"
+                size: dp(30), dp(30)
+                pos: self.center_x - dp(15), self.center_y - dp(15)
+
+    Widget:
+        size_hint_y: None
+        height: "8dp"
+
+
+<PainelBanco@BoxLayout>:
+    padding: "14dp"
+    spacing: "10dp"
+
+    canvas.before:
+        Color:
+            rgba: 0.13, 0.13, 0.13, 1
+        RoundedRectangle:
+            pos: self.pos
+            size: self.size
+            radius: [dp(7)]
+    canvas.after:
+        Color:
+            rgba: 0.28, 0.28, 0.28, 1
+        Line:
+            rounded_rectangle: (self.x, self.y, self.width, self.height, dp(7))
+            width: 1
+
+
+<CabecalhoTabelaBanco@Label>:
+    bold: True
+    font_size: "12sp"
+    color: 0.76, 0.76, 0.76, 1
+    text_size: self.size
+    halign: "left"
+    valign: "middle"
+
+
+<CelulaTabelaBanco@Label>:
+    font_size: "12sp"
+    color: 0.90, 0.90, 0.90, 1
+    text_size: self.size
+    halign: "left"
+    valign: "middle"
+
 
 ScreenManager:
+    size: Window.size
+    pos: 0, 0
+    transition: NoTransition()
     TelaPrincipalLeitora:
+        size: root.size
+        pos: root.pos
     TelaParametrosLeitura:
+        size: root.size
+        pos: root.pos
     TelaGraficos:
+        size: root.size
+        pos: root.pos
+    TelaBancoDados:
+        size: root.size
+        pos: root.pos
 
 
 <TelaPrincipalLeitora>:
@@ -12,6 +167,9 @@ ScreenManager:
 
     ScrollView:
         id: rolagem_principal
+        size_hint: None, None
+        size: root.width - dp(56), root.height
+        pos: root.x + dp(56), root.y
         do_scroll_x: False
         do_scroll_y: True
         # Em Kivy, scroll_y = 1 posiciona o topo do conteúdo no viewport.
@@ -36,150 +194,269 @@ ScreenManager:
                 height: "36dp"
                 spacing: 6
 
-                Widget:
-                    size_hint_x: None
-                    width: "36dp"
-
                 Label:
                     text: "OSL Reading"
                     font_size: "22sp"
                     bold: True
 
-                BotaoNavegacaoParametros:
-                    text: ""
-                    size_hint: None, None
-                    size: "36dp", "36dp"
+            BoxLayout:
+                size_hint_y: None
+                height: "72dp"
+                spacing: 12
+                padding: 8, 5
+
+                canvas.before:
+                    Color:
+                        rgba: 0.12, 0.12, 0.12, 1
+                    RoundedRectangle:
+                        pos: self.pos
+                        size: self.size
+                        radius: [dp(6)]
+                canvas.after:
+                    Color:
+                        rgba: 0.24, 0.24, 0.24, 1
+                    Line:
+                        rounded_rectangle: (self.x, self.y, self.width, self.height, dp(6))
+                        width: 1
+
+                BoxLayout:
+                    orientation: "vertical"
+                    spacing: 4
+
+                    Label:
+                        text: "Porta COM"
+                        size_hint_y: None
+                        height: "16dp"
+                        text_size: self.size
+                        halign: "left"
+                        valign: "middle"
+                        font_size: "12sp"
+                        bold: True
+
+                    BoxLayout:
+                        spacing: 8
+
+                        Spinner:
+                            id: porta_spinner
+                            text: "COM Port"
+                            values: []
+
+                        Button:
+                            text: "Refresh"
+                            size_hint_x: None
+                            width: "106dp"
+                            on_release: app.root.get_screen("main").atualizar_portas_serial()
+
+                        Button:
+                            id: botao_conexao_serial
+                            text: "Connect"
+                            size_hint_x: None
+                            width: "106dp"
+                            on_release: app.root.get_screen("main").func_botao_conexao_serial()
+
+                BoxLayout:
+                    orientation: "vertical"
+                    size_hint_x: None
+                    width: "220dp"
+                    spacing: 4
+
+                    Label:
+                        text: "Controle"
+                        size_hint_y: None
+                        height: "16dp"
+                        text_size: self.size
+                        halign: "left"
+                        valign: "middle"
+                        font_size: "12sp"
+                        bold: True
+
+                    BoxLayout:
+                        spacing: 8
+
+                        Button:
+                            id: start_button
+                            text: "Start"
+                            size_hint_x: None
+                            width: "106dp"
+                            disabled: root.test_mode == "DOSIMETER_ID" and not root.start_allowed
+                            on_release: app.root.get_screen("main").botao_leitura()
+
+                        Button:
+                            text: "Stop"
+                            size_hint_x: None
+                            width: "106dp"
+                            on_release: app.root.get_screen("main").botao_stop()
+
+            BoxLayout:
+                size_hint_y: None
+                height: "42dp"
+                spacing: 0
+
+                Button:
+                    text: "Manual"
                     background_normal: ""
                     background_down: ""
-                    background_color: 0.18, 0.18, 0.18, 1
-                    color: 1, 1, 1, 1
+                    background_color: 0.16, 0.16, 0.16, 1
+                    on_release: root.selecionar_modo("MANUAL")
 
                     canvas.after:
                         Color:
-                            rgba: 1, 1, 1, 1
+                            rgba: (0.08, 0.55, 0.95, 1) if root.test_mode == "MANUAL" else (0.32, 0.32, 0.32, 1)
                         Rectangle:
-                            source: "assets/UI/angulo-direito-branco.png"
-                            size: dp(15), dp(15)
-                            pos: self.center_x - dp(7.5), self.center_y - dp(7.5)
-
-                    on_release:
-                        app.root.transition.direction = "left"
-                        app.root.current = "parametros"
-
-            BoxLayout:
-                size_hint_y: None
-                height: "36dp"
-                spacing: 8
-
-                Spinner:
-                    id: porta_spinner
-                    text: "COM Port"
-                    values: []
+                            pos: self.x, self.y
+                            size: self.width, dp(3)
 
                 Button:
-                    text: "Refresh"
-                    size_hint_x: None
-                    width: "100dp"
-                    on_release: app.root.get_screen("main").atualizar_portas_serial()
+                    text: "Dosímetro ID"
+                    background_normal: ""
+                    background_down: ""
+                    background_color: 0.16, 0.16, 0.16, 1
+                    on_release: root.selecionar_modo("DOSIMETER_ID")
 
-                Button:
-                    id: botao_conexao_serial
-                    text: "Connect"
-                    size_hint_x: None
-                    width: "110dp"
-                    on_release: app.root.get_screen("main").func_botao_conexao_serial()
+                    canvas.after:
+                        Color:
+                            rgba: (0.08, 0.55, 0.95, 1) if root.test_mode == "DOSIMETER_ID" else (0.32, 0.32, 0.32, 1)
+                        Rectangle:
+                            pos: self.x, self.y
+                            size: self.width, dp(3)
 
-            BoxLayout:
+            GridLayout:
+                id: manual_panel
+                cols: 2
                 size_hint_y: None
-                height: "36dp"
+                height: dp(216) if root.test_mode == "MANUAL" else 0
+                opacity: 1 if root.test_mode == "MANUAL" else 0
+                disabled: root.test_mode != "MANUAL"
+                spacing: 6
 
                 Label:
                     text: "ECC"
-                    text_size: self.size
                     font_size: "18sp"
-                    halign: "center"
-                    valign: "middle"
-
                 TextInput:
                     id: ecc_textInput
                     text: "1"
-
-            BoxLayout:
-                size_hint_y: None
-                height: "36dp"
+                    multiline: False
 
                 Label:
                     text: "RCF"
-                    text_size: self.size
                     font_size: "18sp"
-                    halign: "center"
-                    valign: "middle"
-
                 TextInput:
                     id: rcf_textInput
                     text: "0.000033"
-
-            BoxLayout:
-                size_hint_y: None
-                height: "36dp"
+                    multiline: False
 
                 Label:
                     text: "Fang"
-                    text_size: self.size
                     font_size: "18sp"
-                    halign: "center"
-                    valign: "middle"
-
                 TextInput:
                     id: fcal_textInput
                     text: "1"
-
-            BoxLayout:
-                size_hint_y: None
-                height: "36dp"
+                    multiline: False
 
                 Label:
                     text: "Fenerg"
-                    text_size: self.size
                     font_size: "18sp"
-                    halign: "center"
-                    valign: "middle"
-
                 TextInput:
                     id: fenerg_textInput
                     text: "1"
-
-            BoxLayout:
-                size_hint_y: None
-                height: "36dp"
+                    multiline: False
 
                 Label:
                     text: "Base Line"
-                    text_size: self.size
                     font_size: "18sp"
-                    halign: "center"
-                    valign: "middle"
-
                 TextInput:
                     id: branco_textInput
                     text: "0"
+                    multiline: False
+
+                Label:
+                    text: "File Name"
+                    font_size: "18sp"
+                TextInput:
+                    id: nome_arquivo_input
+                    hint_text: "File Name"
+                    multiline: False
+
+            BoxLayout:
+                id: dosimeter_panel
+                orientation: "vertical"
+                size_hint_y: None
+                height: dp(174) if root.test_mode == "DOSIMETER_ID" else 0
+                opacity: 1 if root.test_mode == "DOSIMETER_ID" else 0
+                disabled: root.test_mode != "DOSIMETER_ID"
+                spacing: 6
+
+                BoxLayout:
+                    size_hint_y: None
+                    height: "50dp"
+                    spacing: 8
+
+                    BoxLayout:
+                        orientation: "vertical"
+
+                        Label:
+                            text: "Dosímetro ID"
+                            size_hint_y: None
+                            height: "18dp"
+                            text_size: self.size
+                            halign: "left"
+                            valign: "middle"
+
+                        TextInput:
+                            id: dosimeter_id_input
+                            hint_text: "Leia os 10 dígitos e pressione Enter"
+                            multiline: False
+                            on_text: root.dosimetro_texto_alterado(self.text)
+                            on_text_validate: root.confirmar_codigo_dosimetro()
+
+                    BoxLayout:
+                        orientation: "vertical"
+
+                        Label:
+                            text: "Leitora"
+                            size_hint_y: None
+                            height: "18dp"
+                            text_size: self.size
+                            halign: "left"
+                            valign: "middle"
+
+                        Spinner:
+                            id: reader_spinner
+                            text: "Selecione a leitora"
+                            values: []
+                            on_text: root.leitora_selecionada(self.text)
+
+                Label:
+                    text: root.dosimeter_status
+                    size_hint_y: None
+                    height: "32dp"
+                    text_size: self.size
+                    halign: "left"
+                    valign: "middle"
+                    color: (0.42, 0.86, 0.48, 1) if root.start_allowed else (0.92, 0.72, 0.35, 1)
+
+                Label:
+                    text: "ECC: {}   •   RCF: {}   •   Arquivo: {}".format(root.loaded_ecc, root.loaded_rcf, root.automatic_file_name)
+                    size_hint_y: None
+                    height: "32dp"
+                    text_size: self.size
+                    halign: "left"
+                    valign: "middle"
+
+                Label:
+                    text: "Fang, Fenerg e Base Line usam a configuração atual do modo Manual."
+                    size_hint_y: None
+                    height: "28dp"
+                    color: 0.68, 0.68, 0.68, 1
+                    text_size: self.size
+                    halign: "left"
+                    valign: "middle"
 
             GridLayout:
-
-
-
                 cols: 2
                 size_hint_y: None
-                height: 108
+                height: "52dp"
                 spacing: 8
-
-                Button:
-                    text: "Start"
-                    on_release: app.root.get_screen("main").botao_leitura()
-
-                Button:
-                    text: "Stop"
-                    on_release: app.root.get_screen("main").enviar_comando_sudo("stop")
 
                 Button:
                     text: "Erase"
@@ -188,14 +465,6 @@ ScreenManager:
                 Button:
                     text: "Ref Light"
                     on_release: app.root.get_screen("main").botao_ref_light()
-
-            BoxLayout:
-                size_hint_y: None
-                height: "36dp"
-
-                TextInput:
-                    id: nome_arquivo_input
-                    hint_text: "File Name"
 
             TabbedPanel:
                 do_default_tab: False
@@ -367,7 +636,7 @@ ScreenManager:
                                         size: self.size
                                         radius: [dp(3)]
 
-                                on_release: app.trocar_para_graficos()
+                                on_release: app.root.current = "graficos"
 
                         GraficoTempoReal:
                             id: grafico_tempo_real
@@ -394,11 +663,26 @@ ScreenManager:
                             halign: "left"
                             valign: "top"
 
+    BarraLateral:
+        tela_ativa: "main"
+        pos: root.pos
+
+
 <TelaParametrosLeitura>:
     name: "parametros"
 
+    canvas.before:
+        Color:
+            rgba: 0, 0, 0, 1
+        Rectangle:
+            pos: self.pos
+            size: self.size
+
     BoxLayout:
         orientation: "vertical"
+        size_hint: None, None
+        size: root.width - dp(56), root.height
+        pos: root.x + dp(56), root.y
         padding: 12
         spacing: 12
 
@@ -407,36 +691,10 @@ ScreenManager:
             height: "40dp"
             spacing: 6
 
-            BotaoNavegacaoParametros:
-                text: ""
-                size_hint: None, None
-                size: "36dp", "36dp"
-                background_normal: ""
-                background_down: ""
-                background_color: 0.18, 0.18, 0.18, 1
-                color: 1, 1, 1, 1
-
-                canvas.after:
-                    Color:
-                        rgba: 1, 1, 1, 1
-                    Rectangle:
-                        source: "assets/UI/angulo-direito-branco.png"
-                        size: dp(15), dp(15)
-                        pos: self.center_x - dp(7.5), self.center_y - dp(7.5)
-                        tex_coords: 1, 0, 0, 0, 0, 1, 1, 1
-
-                on_release:
-                    app.root.transition.direction = "right"
-                    app.root.current = "main"
-
             Label:
                 text: "Setup"
                 font_size: "22sp"
                 bold: True
-
-            Widget:
-                size_hint_x: None
-                width: "36dp"
 
         GridLayout:
             cols: 2
@@ -496,12 +754,26 @@ ScreenManager:
 
         Widget:
 
+    BarraLateral:
+        tela_ativa: "parametros"
+        pos: root.pos
+
 
 <TelaGraficos>:
     name: "graficos"
 
+    canvas.before:
+        Color:
+            rgba: 0, 0, 0, 1
+        Rectangle:
+            pos: self.pos
+            size: self.size
+
     BoxLayout:
         orientation: "horizontal"
+        size_hint: None, None
+        size: root.width - dp(56), root.height
+        pos: root.x + dp(56), root.y
         padding: 8
         spacing: 8
 
@@ -649,3 +921,413 @@ ScreenManager:
                 size_hint_y: None
                 height: 44
                 on_release: app.root.current = "main"
+
+    BarraLateral:
+        tela_ativa: "graficos"
+        pos: root.pos
+
+
+<TelaBancoDados>:
+    name: "banco_dados"
+
+    canvas.before:
+        Color:
+            rgba: 0.075, 0.075, 0.075, 1
+        Rectangle:
+            pos: self.pos
+            size: self.size
+
+    BoxLayout:
+        orientation: "vertical"
+        size_hint: None, None
+        size: root.width - dp(56), root.height
+        pos: root.x + dp(56), root.y
+        padding: "16dp"
+        spacing: "10dp"
+
+        BoxLayout:
+            orientation: "vertical"
+            size_hint_y: None
+            height: "58dp"
+
+            Label:
+                text: "Banco de dados"
+                font_size: "24sp"
+                bold: True
+                text_size: self.size
+                halign: "left"
+                valign: "middle"
+
+            Label:
+                text: "Cadastros, histórico de leituras, CSV e backup SQLite"
+                font_size: "13sp"
+                color: 0.65, 0.65, 0.65, 1
+                text_size: self.size
+                halign: "left"
+                valign: "top"
+
+        TabbedPanel:
+            do_default_tab: False
+            tab_height: "40dp"
+            tab_width: self.width / 3
+
+            TabbedPanelItem:
+                text: "Dosímetros"
+
+                BoxLayout:
+                    orientation: "vertical"
+                    padding: "10dp"
+                    spacing: "8dp"
+
+                    BoxLayout:
+                        size_hint_y: None
+                        height: "38dp"
+                        spacing: "8dp"
+
+                        TextInput:
+                            id: db_dosimeter_search
+                            hint_text: "Pesquisar por Dosímetro ID"
+                            multiline: False
+                            on_text_validate: root.pesquisar_dosimetros()
+
+                        Button:
+                            text: "Pesquisar"
+                            size_hint_x: None
+                            width: "110dp"
+                            on_release: root.pesquisar_dosimetros()
+
+                    GridLayout:
+                        cols: 5
+                        size_hint_y: None
+                        height: "70dp"
+                        spacing: "8dp"
+
+                        BoxLayout:
+                            orientation: "vertical"
+                            Label:
+                                text: "Dosímetro ID"
+                                size_hint_y: None
+                                height: "22dp"
+                            TextInput:
+                                id: db_dosimeter_id
+                                multiline: False
+
+                        BoxLayout:
+                            orientation: "vertical"
+                            Label:
+                                text: "ECC"
+                                size_hint_y: None
+                                height: "22dp"
+                            TextInput:
+                                id: db_dosimeter_ecc
+                                multiline: False
+
+                        BoxLayout:
+                            orientation: "vertical"
+                            Label:
+                                text: "Data inicial"
+                                size_hint_y: None
+                                height: "22dp"
+                            EntradaData:
+                                id: db_dosimeter_begin
+                                hint_text: "dd/mm/aaaa"
+                                multiline: False
+
+                        BoxLayout:
+                            orientation: "vertical"
+                            Label:
+                                text: "Data final"
+                                size_hint_y: None
+                                height: "22dp"
+                            EntradaData:
+                                id: db_dosimeter_end
+                                hint_text: "dd/mm/aaaa"
+                                multiline: False
+
+                        BoxLayout:
+                            orientation: "vertical"
+                            Label:
+                                text: "Ativo"
+                                size_hint_y: None
+                                height: "22dp"
+                            CheckBox:
+                                id: db_dosimeter_active
+                                active: True
+
+                    BoxLayout:
+                        size_hint_y: None
+                        height: "38dp"
+                        spacing: "8dp"
+
+                        Button:
+                            text: "Novo"
+                            on_release: root.novo_dosimetro()
+                        Button:
+                            text: "Salvar"
+                            on_release: root.salvar_dosimetro()
+                        Button:
+                            text: "Ativar/Desativar"
+                            on_release: root.alternar_dosimetro()
+
+                    ScrollView:
+                        do_scroll_x: False
+
+                        GridLayout:
+                            id: db_dosimeter_results
+                            cols: 1
+                            size_hint_y: None
+                            height: self.minimum_height
+                            spacing: "3dp"
+
+                    Label:
+                        text: root.dosimeter_message
+                        size_hint_y: None
+                        height: "30dp"
+                        text_size: self.size
+                        halign: "left"
+                        valign: "middle"
+
+            TabbedPanelItem:
+                text: "Leitoras"
+
+                BoxLayout:
+                    orientation: "vertical"
+                    padding: "10dp"
+                    spacing: "8dp"
+
+                    BoxLayout:
+                        size_hint_y: None
+                        height: "38dp"
+                        spacing: "8dp"
+
+                        TextInput:
+                            id: db_reader_search
+                            hint_text: "Pesquisar por Reader"
+                            multiline: False
+                            on_text_validate: root.pesquisar_leitoras()
+
+                        Button:
+                            text: "Pesquisar"
+                            size_hint_x: None
+                            width: "110dp"
+                            on_release: root.pesquisar_leitoras()
+
+                    GridLayout:
+                        cols: 5
+                        size_hint_y: None
+                        height: "70dp"
+                        spacing: "8dp"
+
+                        BoxLayout:
+                            orientation: "vertical"
+                            Label:
+                                text: "Reader"
+                                size_hint_y: None
+                                height: "22dp"
+                            TextInput:
+                                id: db_reader_id
+                                multiline: False
+
+                        BoxLayout:
+                            orientation: "vertical"
+                            Label:
+                                text: "RCF"
+                                size_hint_y: None
+                                height: "22dp"
+                            TextInput:
+                                id: db_reader_rcf
+                                multiline: False
+
+                        BoxLayout:
+                            orientation: "vertical"
+                            Label:
+                                text: "Begin Date"
+                                size_hint_y: None
+                                height: "22dp"
+                            EntradaData:
+                                id: db_reader_begin
+                                hint_text: "dd/mm/aaaa"
+                                multiline: False
+
+                        BoxLayout:
+                            orientation: "vertical"
+                            Label:
+                                text: "End Date"
+                                size_hint_y: None
+                                height: "22dp"
+                            EntradaData:
+                                id: db_reader_end
+                                hint_text: "opcional"
+                                multiline: False
+
+                        BoxLayout:
+                            orientation: "vertical"
+                            Label:
+                                text: "Active"
+                                size_hint_y: None
+                                height: "22dp"
+                            CheckBox:
+                                id: db_reader_active
+                                active: True
+
+                    BoxLayout:
+                        size_hint_y: None
+                        height: "38dp"
+                        spacing: "8dp"
+
+                        Button:
+                            text: "Nova"
+                            on_release: root.nova_leitora()
+                        Button:
+                            text: "Salvar"
+                            on_release: root.salvar_leitora()
+                        Button:
+                            text: "Ativar/Desativar"
+                            on_release: root.alternar_leitora()
+
+                    ScrollView:
+                        do_scroll_x: False
+
+                        GridLayout:
+                            id: db_reader_results
+                            cols: 1
+                            size_hint_y: None
+                            height: self.minimum_height
+                            spacing: "3dp"
+
+                    Label:
+                        text: root.reader_message
+                        size_hint_y: None
+                        height: "30dp"
+                        text_size: self.size
+                        halign: "left"
+                        valign: "middle"
+
+            TabbedPanelItem:
+                text: "Histórico"
+
+                BoxLayout:
+                    orientation: "vertical"
+                    padding: "10dp"
+                    spacing: "8dp"
+
+                    GridLayout:
+                        cols: 5
+                        size_hint_y: None
+                        height: "66dp"
+                        spacing: "8dp"
+
+                        BoxLayout:
+                            orientation: "vertical"
+                            Label:
+                                text: "Dosímetro"
+                                size_hint_y: None
+                                height: "22dp"
+                            TextInput:
+                                id: db_history_dosimeter
+                                multiline: False
+
+                        BoxLayout:
+                            orientation: "vertical"
+                            Label:
+                                text: "Leitora"
+                                size_hint_y: None
+                                height: "22dp"
+                            TextInput:
+                                id: db_history_reader
+                                multiline: False
+
+                        BoxLayout:
+                            orientation: "vertical"
+                            Label:
+                                text: "Modo"
+                                size_hint_y: None
+                                height: "22dp"
+                            Spinner:
+                                id: db_history_mode
+                                text: "Todos"
+                                values: ("Todos", "MANUAL", "DOSIMETER_ID")
+
+                        BoxLayout:
+                            orientation: "vertical"
+                            Label:
+                                text: "Data inicial"
+                                size_hint_y: None
+                                height: "22dp"
+                            EntradaData:
+                                id: db_history_from
+                                hint_text: "dd/mm/aaaa"
+                                multiline: False
+
+                        BoxLayout:
+                            orientation: "vertical"
+                            Label:
+                                text: "Data final"
+                                size_hint_y: None
+                                height: "22dp"
+                            EntradaData:
+                                id: db_history_to
+                                hint_text: "dd/mm/aaaa"
+                                multiline: False
+
+                    BoxLayout:
+                        size_hint_y: None
+                        height: "36dp"
+
+                        Label:
+                            text: "Data/hora | Dosímetro | Leitora | Modo | Dose | Status"
+                            bold: True
+                            text_size: self.size
+                            halign: "left"
+                            valign: "middle"
+
+                        Label:
+                            text: root.history_count
+                            size_hint_x: None
+                            width: "110dp"
+
+                    ScrollView:
+                        do_scroll_x: False
+
+                        GridLayout:
+                            id: db_history_results
+                            cols: 1
+                            size_hint_y: None
+                            height: self.minimum_height
+                            spacing: "3dp"
+
+                    Label:
+                        text: root.history_details
+                        size_hint_y: None
+                        height: "104dp"
+                        font_size: "12sp"
+                        text_size: self.size
+                        halign: "left"
+                        valign: "top"
+
+                    BoxLayout:
+                        size_hint_y: None
+                        height: "40dp"
+                        spacing: "8dp"
+
+                        Button:
+                            text: "Pesquisar"
+                            on_release: root.pesquisar_historico()
+                        Button:
+                            text: "Exportar CSV"
+                            on_release: root.exportar_csv_historico()
+                        Button:
+                            text: "Exportar backup do banco"
+                            on_release: root.abrir_dialogo_backup()
+
+                    Label:
+                        text: root.history_message
+                        size_hint_y: None
+                        height: "30dp"
+                        text_size: self.size
+                        halign: "left"
+                        valign: "middle"
+
+    BarraLateral:
+        tela_ativa: "banco_dados"
+        pos: root.pos
