@@ -49,10 +49,20 @@ def safe_test_filename(value: str) -> str:
 def dosimeter_filename(
     dosimeter_id: str,
     moment: datetime | None = None,
+    *,
+    dose_channel: str | None = None,
+    reading_type: str | None = None,
 ) -> str:
     moment = moment or datetime.now()
+    suffixes = []
+    if reading_type:
+        suffixes.append("linha-base" if reading_type == "BACKGROUND" else "integral")
+    if dose_channel:
+        suffixes.append(str(dose_channel).strip().lower())
+    suffix = f"_{'_'.join(suffixes)}" if suffixes else ""
     return safe_test_filename(
-        f"{dosimeter_id}_{moment.strftime('%Y-%m-%d_%H-%M-%S')}.txt"
+        f"{dosimeter_id}{suffix}_"
+        f"{moment.strftime('%Y-%m-%d_%H-%M-%S-%f')}.txt"
     )
 
 
@@ -79,4 +89,4 @@ def calculate_dose(
     fang: float,
     fenerg: float,
 ) -> float:
-    return (total - baseline) * rcf * ecc * fang * fenerg
+    return max(0.0, (total - baseline) * rcf * ecc * fang * fenerg)

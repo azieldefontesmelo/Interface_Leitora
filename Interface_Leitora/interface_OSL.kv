@@ -381,7 +381,7 @@ ScreenManager:
                 id: dosimeter_panel
                 orientation: "vertical"
                 size_hint_y: None
-                height: dp(174) if root.test_mode == "DOSIMETER_ID" else 0
+                height: dp(226) if root.test_mode == "DOSIMETER_ID" else 0
                 opacity: 1 if root.test_mode == "DOSIMETER_ID" else 0
                 disabled: root.test_mode != "DOSIMETER_ID"
                 spacing: 6
@@ -406,6 +406,7 @@ ScreenManager:
                             id: dosimeter_id_input
                             hint_text: "Leia os 10 dígitos e pressione Enter"
                             multiline: False
+                            disabled: root.test_session_active
                             on_text: root.dosimetro_texto_alterado(self.text)
                             on_text_validate: root.confirmar_codigo_dosimetro()
 
@@ -424,7 +425,39 @@ ScreenManager:
                             id: reader_spinner
                             text: "Selecione a leitora"
                             values: []
+                            disabled: root.test_session_active
                             on_text: root.leitora_selecionada(self.text)
+
+                BoxLayout:
+                    size_hint_y: None
+                    height: "42dp"
+                    spacing: 8
+
+                    Label:
+                        text: "Grandeza"
+                        size_hint_x: None
+                        width: "100dp"
+                        text_size: self.size
+                        halign: "left"
+                        valign: "middle"
+
+                    Button:
+                        id: hp10_button
+                        text: "Lendo Hp(10)..." if root.acquisition_active and root.dose_channel == "HP10" else ("Hp(10) concluído  ✓" if root.hp10_complete else "Hp(10)")
+                        background_normal: ""
+                        background_down: ""
+                        background_color: (0.08, 0.55, 0.95, 1) if root.dose_channel == "HP10" else (0.16, 0.16, 0.16, 1)
+                        disabled: root.acquisition_active or root.hp10_complete or (root.test_session_active and root.dose_channel != "HP10")
+                        on_release: root.selecionar_grandeza("HP10")
+
+                    Button:
+                        id: hp007_button
+                        text: "Lendo Hp(0,07)..." if root.acquisition_active and root.dose_channel == "HP007" else ("Hp(0,07) concluído  ✓" if root.hp007_complete else "Hp(0,07)")
+                        background_normal: ""
+                        background_down: ""
+                        background_color: (0.08, 0.55, 0.95, 1) if root.dose_channel == "HP007" else (0.16, 0.16, 0.16, 1)
+                        disabled: root.acquisition_active or root.hp007_complete or (root.test_session_active and root.dose_channel != "HP007")
+                        on_release: root.selecionar_grandeza("HP007")
 
                 Label:
                     text: root.dosimeter_status
@@ -436,7 +469,7 @@ ScreenManager:
                     color: (0.42, 0.86, 0.48, 1) if root.start_allowed else (0.92, 0.72, 0.35, 1)
 
                 Label:
-                    text: "ECC: {}   •   RCF: {}   •   Arquivo: {}".format(root.loaded_ecc, root.loaded_rcf, root.automatic_file_name)
+                    text: "ECC: {}   •   BC: {}   •   RCF: {}   •   Arquivo: {}".format(root.loaded_ecc, root.loaded_bc, root.loaded_rcf, root.automatic_file_name)
                     size_hint_y: None
                     height: "32dp"
                     text_size: self.size
@@ -444,7 +477,7 @@ ScreenManager:
                     valign: "middle"
 
                 Label:
-                    text: "Fang, Fenerg e Base Line usam a configuração atual do modo Manual."
+                    text: "ECC e BC são carregados do cadastro conforme a grandeza selecionada."
                     size_hint_y: None
                     height: "28dp"
                     color: 0.68, 0.68, 0.68, 1
@@ -967,12 +1000,13 @@ ScreenManager:
                 valign: "top"
 
         TabbedPanel:
+            id: database_tabs
             do_default_tab: False
             tab_height: "40dp"
             tab_width: self.width / 5
 
             TabbedPanelItem:
-                text: "Personal dose"
+                text: "Integral da Área"
 
                 BoxLayout:
                     orientation: "vertical"
@@ -1031,7 +1065,7 @@ ScreenManager:
 
                         Label:
                             text: "Data/hora"
-                            size_hint_x: 0.30
+                            size_hint_x: 0.25
                             bold: True
                             text_size: self.size
                             halign: "left"
@@ -1040,17 +1074,22 @@ ScreenManager:
 
                         Label:
                             text: "Dosímetro"
-                            size_hint_x: 0.23
+                            size_hint_x: 0.20
                             bold: True
 
                         Label:
-                            text: "Dose (mSv)"
-                            size_hint_x: 0.19
+                            text: "Hp(10) mSv"
+                            size_hint_x: 0.17
+                            bold: True
+
+                        Label:
+                            text: "Hp(0,07) mSv"
+                            size_hint_x: 0.17
                             bold: True
 
                         Label:
                             text: "Status  •  " + root.personal_dose_count
-                            size_hint_x: 0.28
+                            size_hint_x: 0.21
                             bold: True
 
                     ScrollView:
@@ -1084,7 +1123,7 @@ ScreenManager:
                         valign: "middle"
 
             TabbedPanelItem:
-                text: "Background"
+                text: "Linha de Base"
 
                 BoxLayout:
                     orientation: "vertical"
@@ -1143,7 +1182,7 @@ ScreenManager:
 
                         Label:
                             text: "Data/hora"
-                            size_hint_x: 0.30
+                            size_hint_x: 0.25
                             bold: True
                             text_size: self.size
                             halign: "left"
@@ -1152,17 +1191,22 @@ ScreenManager:
 
                         Label:
                             text: "Dosímetro"
-                            size_hint_x: 0.23
+                            size_hint_x: 0.20
                             bold: True
 
                         Label:
-                            text: "Dose (mSv)"
-                            size_hint_x: 0.19
+                            text: "Hp(10) mSv"
+                            size_hint_x: 0.17
+                            bold: True
+
+                        Label:
+                            text: "Hp(0,07) mSv"
+                            size_hint_x: 0.17
                             bold: True
 
                         Label:
                             text: "Status  •  " + root.background_count
-                            size_hint_x: 0.28
+                            size_hint_x: 0.21
                             bold: True
 
                     ScrollView:
@@ -1221,9 +1265,9 @@ ScreenManager:
                             on_release: root.pesquisar_dosimetros()
 
                     GridLayout:
-                        cols: 5
+                        cols: 4
                         size_hint_y: None
-                        height: "70dp"
+                        height: "132dp"
                         spacing: "8dp"
 
                         BoxLayout:
@@ -1235,15 +1279,58 @@ ScreenManager:
                             TextInput:
                                 id: db_dosimeter_id
                                 multiline: False
+                                on_text_validate: root.carregar_dosimetro_por_id(self.text)
+                                on_focus:
+                                    if not self.focus: root.carregar_dosimetro_por_id(self.text)
 
                         BoxLayout:
                             orientation: "vertical"
                             Label:
-                                text: "ECC"
+                                text: "ECC Hp(10)"
                                 size_hint_y: None
                                 height: "22dp"
                             TextInput:
-                                id: db_dosimeter_ecc
+                                id: db_dosimeter_ecc_hp10
+                                multiline: False
+
+                        BoxLayout:
+                            orientation: "vertical"
+                            Label:
+                                text: "ECC Hp(0,07)"
+                                size_hint_y: None
+                                height: "22dp"
+                            TextInput:
+                                id: db_dosimeter_ecc_hp007
+                                multiline: False
+
+                        BoxLayout:
+                            orientation: "vertical"
+                            Label:
+                                text: "Ativo"
+                                size_hint_y: None
+                                height: "22dp"
+                            CheckBox:
+                                id: db_dosimeter_active
+                                active: True
+
+                        BoxLayout:
+                            orientation: "vertical"
+                            Label:
+                                text: "BC Hp(10)"
+                                size_hint_y: None
+                                height: "22dp"
+                            TextInput:
+                                id: db_dosimeter_bc_hp10
+                                multiline: False
+
+                        BoxLayout:
+                            orientation: "vertical"
+                            Label:
+                                text: "BC Hp(0,07)"
+                                size_hint_y: None
+                                height: "22dp"
+                            TextInput:
+                                id: db_dosimeter_bc_hp007
                                 multiline: False
 
                         BoxLayout:
@@ -1268,16 +1355,6 @@ ScreenManager:
                                 hint_text: "opcional"
                                 multiline: False
 
-                        BoxLayout:
-                            orientation: "vertical"
-                            Label:
-                                text: "Ativo"
-                                size_hint_y: None
-                                height: "22dp"
-                            CheckBox:
-                                id: db_dosimeter_active
-                                active: True
-
                     BoxLayout:
                         size_hint_y: None
                         height: "38dp"
@@ -1292,6 +1369,9 @@ ScreenManager:
                         Button:
                             text: "Ativar/Desativar"
                             on_release: root.alternar_dosimetro()
+                        Button:
+                            text: "Excluir"
+                            on_release: root.excluir_dosimetro()
 
                     BoxLayout:
                         size_hint_y: None
@@ -1306,27 +1386,39 @@ ScreenManager:
 
                         Label:
                             text: "Dosímetro"
-                            size_hint_x: 0.25
+                            size_hint_x: 0.17
                             bold: True
                             text_size: self.size
                             halign: "left"
                             valign: "middle"
                             padding: "10dp", 0
                         Label:
-                            text: "ECC"
+                            text: "ECC Hp(10)"
+                            size_hint_x: 0.11
+                            bold: True
+                        Label:
+                            text: "ECC Hp(0,07)"
                             size_hint_x: 0.12
                             bold: True
                         Label:
+                            text: "BC Hp(10)"
+                            size_hint_x: 0.10
+                            bold: True
+                        Label:
+                            text: "BC Hp(0,07)"
+                            size_hint_x: 0.11
+                            bold: True
+                        Label:
                             text: "Data inicial"
-                            size_hint_x: 0.20
+                            size_hint_x: 0.14
                             bold: True
                         Label:
                             text: "Data final"
-                            size_hint_x: 0.20
+                            size_hint_x: 0.14
                             bold: True
                         Label:
                             text: "Status  •  " + root.dosimeter_count
-                            size_hint_x: 0.23
+                            size_hint_x: 0.11
                             bold: True
 
                     ScrollView:
@@ -1387,6 +1479,9 @@ ScreenManager:
                             TextInput:
                                 id: db_reader_id
                                 multiline: False
+                                on_text_validate: root.carregar_leitora_por_id(self.text)
+                                on_focus:
+                                    if not self.focus: root.carregar_leitora_por_id(self.text)
 
                         BoxLayout:
                             orientation: "vertical"
@@ -1444,6 +1539,9 @@ ScreenManager:
                         Button:
                             text: "Ativar/Desativar"
                             on_release: root.alternar_leitora()
+                        Button:
+                            text: "Excluir"
+                            on_release: root.excluir_leitora()
 
                     BoxLayout:
                         size_hint_y: None
@@ -1579,7 +1677,7 @@ ScreenManager:
 
                         Label:
                             text: "Data/hora"
-                            size_hint_x: 0.23
+                            size_hint_x: 0.20
                             bold: True
                             text_size: self.size
                             halign: "left"
@@ -1588,19 +1686,23 @@ ScreenManager:
 
                         Label:
                             text: "Dosímetro"
-                            size_hint_x: 0.16
-                            bold: True
-                        Label:
-                            text: "Leitora"
                             size_hint_x: 0.14
                             bold: True
                         Label:
+                            text: "Leitora"
+                            size_hint_x: 0.12
+                            bold: True
+                        Label:
                             text: "Modo"
-                            size_hint_x: 0.16
+                            size_hint_x: 0.13
+                            bold: True
+                        Label:
+                            text: "Grandeza"
+                            size_hint_x: 0.11
                             bold: True
                         Label:
                             text: "Dose (mSv)"
-                            size_hint_x: 0.13
+                            size_hint_x: 0.12
                             bold: True
                         Label:
                             text: "Status  •  " + root.history_count

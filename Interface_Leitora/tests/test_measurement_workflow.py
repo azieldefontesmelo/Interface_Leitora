@@ -29,7 +29,16 @@ class MeasurementWorkflowTestCase(unittest.TestCase):
                 "0123456789",
                 datetime(2026, 7, 30, 12, 34, 56),
             ),
-            "0123456789_2026-07-30_12-34-56.txt",
+            "0123456789_2026-07-30_12-34-56-000000.txt",
+        )
+        self.assertEqual(
+            dosimeter_filename(
+                "0123456789",
+                datetime(2026, 7, 30, 12, 34, 56),
+                dose_channel="HP007",
+                reading_type="BACKGROUND",
+            ),
+            "0123456789_linha-base_hp007_2026-07-30_12-34-56-000000.txt",
         )
 
     def test_preserves_dose_formula(self):
@@ -43,6 +52,17 @@ class MeasurementWorkflowTestCase(unittest.TestCase):
                 fenerg=6,
             ),
             (20 - 2) * 3 * 4 * 5 * 6,
+        )
+        self.assertEqual(
+            calculate_dose(
+                1,
+                baseline=2,
+                rcf=3,
+                ecc=4,
+                fang=5,
+                fenerg=6,
+            ),
+            0,
         )
 
 

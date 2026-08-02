@@ -5,13 +5,14 @@ import math
 import sqlite3
 import sys
 import tempfile
+from uuid import uuid4
 from contextlib import contextmanager
 from datetime import date, datetime, time, timezone
 from pathlib import Path
 from typing import Any, Iterator, Mapping, Sequence
 
 
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 BUSY_TIMEOUT_MS = 10_000
 
 
@@ -32,6 +33,8 @@ MEASUREMENT_COLUMNS = (
     "measured_at",
     "test_mode",
     "reading_type",
+    "dose_channel",
+    "test_session_id",
     "reader_id",
     "dosimeter_id",
     "file_name",
@@ -55,8 +58,13 @@ MEASUREMENT_COLUMNS = (
 PERSONAL_DOSE_COLUMNS = (
     "id",
     "measurement_id",
+    "test_session_id",
+    "hp10_measurement_id",
+    "hp007_measurement_id",
     "time_dos",
     "dosimeter_id",
+    "hp10_dos",
+    "hp007_dos",
     "dose_dos",
     "status_dos",
     "created_at",
@@ -65,8 +73,13 @@ PERSONAL_DOSE_COLUMNS = (
 BACKGROUND_COLUMNS = (
     "id",
     "measurement_id",
+    "test_session_id",
+    "hp10_measurement_id",
+    "hp007_measurement_id",
     "time_bg",
     "dosimeter_id",
+    "hp10_bg",
+    "hp007_bg",
     "dose_bg",
     "status_bg",
     "created_at",
@@ -77,6 +90,7 @@ BACKGROUND_STATUS = "Ready to Use"
 
 VALID_TEST_MODES = frozenset({"MANUAL", "DOSIMETER_ID"})
 VALID_READING_TYPES = frozenset({"PERSONAL_DOSE", "BACKGROUND"})
+VALID_DOSE_CHANNELS = frozenset({"HP10", "HP007"})
 VALID_MEASUREMENT_STATUSES = frozenset(
     {"EM_ANDAMENTO", "CONCLUIDO", "INTERROMPIDO", "ERRO"}
 )
@@ -93,7 +107,10 @@ CREATE TABLE IF NOT EXISTS dosimeters (
                      length(dosimeter_id) = 10
                      AND dosimeter_id NOT GLOB '*[^0-9]*'
                  ),
-    ecc          REAL NOT NULL CHECK (ecc > 0),
+    ecc_hp10     REAL NOT NULL CHECK (ecc_hp10 > 0),
+    ecc_hp007    REAL NOT NULL CHECK (ecc_hp007 > 0),
+    bc_hp10      REAL NOT NULL DEFAULT 0 CHECK (bc_hp10 >= 0),
+    bc_hp007     REAL NOT NULL DEFAULT 0 CHECK (bc_hp007 >= 0),
     begin_date   TEXT NOT NULL,
     end_date     TEXT,
     active       INTEGER NOT NULL DEFAULT 1 CHECK (active IN (0, 1)),
@@ -125,6 +142,10 @@ CREATE TABLE IF NOT EXISTS measurements (
         reading_type IS NULL
         OR reading_type IN ('PERSONAL_DOSE', 'BACKGROUND')
     ),
+    dose_channel     TEXT CHECK (
+        dose_channel IS NULL OR dose_channel IN ('HP10', 'HP007')
+    ),
+    test_session_id  TEXT,
     reader_id        TEXT,
     dosimeter_id     TEXT,
     file_name        TEXT NOT NULL DEFAULT '',
@@ -174,8 +195,13 @@ CREATE INDEX IF NOT EXISTS idx_measurements_mode_date
 CREATE TABLE IF NOT EXISTS historico_dose (
     id           INTEGER PRIMARY KEY AUTOINCREMENT,
     measurement_id INTEGER,
+    test_session_id TEXT,
+    hp10_measurement_id INTEGER,
+    hp007_measurement_id INTEGER,
     time_dos     TEXT NOT NULL,
     dosimeter_id TEXT NOT NULL,
+    hp10_dos     REAL CHECK (hp10_dos IS NULL OR hp10_dos >= 0),
+    hp007_dos    REAL CHECK (hp007_dos IS NULL OR hp007_dos >= 0),
     dose_dos     REAL NOT NULL CHECK (dose_dos >= 0),
     status_dos   TEXT NOT NULL DEFAULT 'Need to Erase'
                  CHECK (status_dos = 'Need to Erase'),
@@ -185,6 +211,14 @@ CREATE TABLE IF NOT EXISTS historico_dose (
         ON UPDATE CASCADE
         ON DELETE RESTRICT,
     FOREIGN KEY (measurement_id)
+        REFERENCES measurements(id)
+        ON UPDATE CASCADE
+        ON DELETE RESTRICT,
+    FOREIGN KEY (hp10_measurement_id)
+        REFERENCES measurements(id)
+        ON UPDATE CASCADE
+        ON DELETE RESTRICT,
+    FOREIGN KEY (hp007_measurement_id)
         REFERENCES measurements(id)
         ON UPDATE CASCADE
         ON DELETE RESTRICT
@@ -199,8 +233,13 @@ CREATE INDEX IF NOT EXISTS idx_historico_dose_time
 CREATE TABLE IF NOT EXISTS historico_branco (
     id           INTEGER PRIMARY KEY AUTOINCREMENT,
     measurement_id INTEGER,
+    test_session_id TEXT,
+    hp10_measurement_id INTEGER,
+    hp007_measurement_id INTEGER,
     time_bg      TEXT NOT NULL,
     dosimeter_id TEXT NOT NULL,
+    hp10_bg      REAL CHECK (hp10_bg IS NULL OR hp10_bg >= 0),
+    hp007_bg     REAL CHECK (hp007_bg IS NULL OR hp007_bg >= 0),
     dose_bg      REAL NOT NULL CHECK (dose_bg >= 0),
     status_bg    TEXT NOT NULL DEFAULT 'Ready to Use'
                  CHECK (status_bg = 'Ready to Use'),
@@ -212,6 +251,14 @@ CREATE TABLE IF NOT EXISTS historico_branco (
     FOREIGN KEY (measurement_id)
         REFERENCES measurements(id)
         ON UPDATE CASCADE
+        ON DELETE RESTRICT,
+    FOREIGN KEY (hp10_measurement_id)
+        REFERENCES measurements(id)
+        ON UPDATE CASCADE
+        ON DELETE RESTRICT,
+    FOREIGN KEY (hp007_measurement_id)
+        REFERENCES measurements(id)
+        ON UPDATE CASCADE
         ON DELETE RESTRICT
 );
 
@@ -220,6 +267,7 @@ CREATE INDEX IF NOT EXISTS idx_historico_branco_dosimeter_time
 
 CREATE INDEX IF NOT EXISTS idx_historico_branco_time
     ON historico_branco(time_bg DESC);
+
 """
 
 
@@ -406,6 +454,7 @@ class Database:
             )
             connection.executescript(SCHEMA)
             self._migrate_optional_dosimeter_end_date(connection)
+            self._migrate_dual_dosimeter_parameters(connection)
             self._migrate_measurement_histories(connection)
             if current_version < SCHEMA_VERSION:
                 now = utc_now()
@@ -471,10 +520,40 @@ class Database:
             connection.execute("PRAGMA foreign_keys = ON")
 
     @staticmethod
+    def _migrate_dual_dosimeter_parameters(
+        connection: sqlite3.Connection,
+    ) -> None:
+        """Add per-channel ECC and baseline values without losing v5 data."""
+        columns = {
+            row["name"]
+            for row in connection.execute("PRAGMA table_info(dosimeters)")
+        }
+        legacy_ecc = "ecc" in columns
+        additions = (
+            ("ecc_hp10", "REAL NOT NULL DEFAULT 1 CHECK (ecc_hp10 > 0)"),
+            ("ecc_hp007", "REAL NOT NULL DEFAULT 1 CHECK (ecc_hp007 > 0)"),
+            ("bc_hp10", "REAL NOT NULL DEFAULT 0 CHECK (bc_hp10 >= 0)"),
+            ("bc_hp007", "REAL NOT NULL DEFAULT 0 CHECK (bc_hp007 >= 0)"),
+        )
+        for column, definition in additions:
+            if column not in columns:
+                connection.execute(
+                    f"ALTER TABLE dosimeters ADD COLUMN {column} {definition}"
+                )
+        if legacy_ecc:
+            connection.execute(
+                """
+                UPDATE dosimeters
+                SET ecc_hp10 = ecc,
+                    ecc_hp007 = ecc
+                """
+            )
+
+    @staticmethod
     def _migrate_measurement_histories(
         connection: sqlite3.Connection,
     ) -> None:
-        """Migrate legacy channel histories to the single-dose v4 model."""
+        """Upgrade acquisitions and histories to the paired-channel model."""
 
         def ensure_column(table: str, column: str, definition: str) -> None:
             columns = {
@@ -498,6 +577,13 @@ class Database:
             "REAL NOT NULL DEFAULT 0 CHECK (raw_signal >= 0)",
         )
         ensure_column(
+            "measurements",
+            "dose_channel",
+            "TEXT CHECK (dose_channel IS NULL OR dose_channel IN "
+            "('HP10', 'HP007'))",
+        )
+        ensure_column("measurements", "test_session_id", "TEXT")
+        ensure_column(
             "historico_dose",
             "measurement_id",
             "INTEGER REFERENCES measurements(id) ON UPDATE CASCADE "
@@ -510,84 +596,57 @@ class Database:
             "ON DELETE RESTRICT",
         )
 
-        dose_columns = {
-            row["name"]
-            for row in connection.execute("PRAGMA table_info(historico_dose)")
+        history_additions = {
+            "historico_dose": (
+                ("test_session_id", "TEXT"),
+                ("hp10_measurement_id", "INTEGER"),
+                ("hp007_measurement_id", "INTEGER"),
+                ("hp10_dos", "REAL CHECK (hp10_dos IS NULL OR hp10_dos >= 0)"),
+                ("hp007_dos", "REAL CHECK (hp007_dos IS NULL OR hp007_dos >= 0)"),
+                ("dose_dos", "REAL"),
+            ),
+            "historico_branco": (
+                ("test_session_id", "TEXT"),
+                ("hp10_measurement_id", "INTEGER"),
+                ("hp007_measurement_id", "INTEGER"),
+                ("hp10_bg", "REAL CHECK (hp10_bg IS NULL OR hp10_bg >= 0)"),
+                ("hp007_bg", "REAL CHECK (hp007_bg IS NULL OR hp007_bg >= 0)"),
+                ("dose_bg", "REAL"),
+            ),
         }
-        if "dose_dos" not in dose_columns:
-            connection.executescript(
-                """
-                CREATE TABLE historico_dose_v4 (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    measurement_id INTEGER,
-                    time_dos TEXT NOT NULL,
-                    dosimeter_id TEXT NOT NULL,
-                    dose_dos REAL NOT NULL CHECK (dose_dos >= 0),
-                    status_dos TEXT NOT NULL DEFAULT 'Need to Erase'
-                        CHECK (status_dos = 'Need to Erase'),
-                    created_at TEXT NOT NULL,
-                    FOREIGN KEY (dosimeter_id) REFERENCES dosimeters(dosimeter_id)
-                        ON UPDATE CASCADE ON DELETE RESTRICT,
-                    FOREIGN KEY (measurement_id) REFERENCES measurements(id)
-                        ON UPDATE CASCADE ON DELETE RESTRICT
-                );
-                INSERT INTO historico_dose_v4 (
-                    id, measurement_id, time_dos, dosimeter_id, dose_dos,
-                    status_dos, created_at
-                )
-                SELECT h.id, h.measurement_id, h.time_dos, h.dosimeter_id,
-                       COALESCE(m.dose_msv, MAX(h.hp10_dos, h.hp007_dos)),
-                       h.status_dos, h.created_at
-                FROM historico_dose h
-                LEFT JOIN measurements m ON m.id = h.measurement_id;
-                DROP TABLE historico_dose;
-                ALTER TABLE historico_dose_v4 RENAME TO historico_dose;
-                """
-            )
+        for table, additions in history_additions.items():
+            for column, definition in additions:
+                ensure_column(table, column, definition)
 
-        background_columns = {
-            row["name"]
-            for row in connection.execute("PRAGMA table_info(historico_branco)")
-        }
-        if "dose_bg" not in background_columns:
-            connection.executescript(
-                """
-                CREATE TABLE historico_branco_v4 (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    measurement_id INTEGER,
-                    time_bg TEXT NOT NULL,
-                    dosimeter_id TEXT NOT NULL,
-                    dose_bg REAL NOT NULL CHECK (dose_bg >= 0),
-                    status_bg TEXT NOT NULL DEFAULT 'Ready to Use'
-                        CHECK (status_bg = 'Ready to Use'),
-                    created_at TEXT NOT NULL,
-                    FOREIGN KEY (dosimeter_id) REFERENCES dosimeters(dosimeter_id)
-                        ON UPDATE CASCADE ON DELETE RESTRICT,
-                    FOREIGN KEY (measurement_id) REFERENCES measurements(id)
-                        ON UPDATE CASCADE ON DELETE RESTRICT
-                );
-                INSERT INTO historico_branco_v4 (
-                    id, measurement_id, time_bg, dosimeter_id, dose_bg,
-                    status_bg, created_at
+        # Preserve the original two-channel values when present. For records
+        # created by the v5 single-dose model, Hp(10) is used as the explicit
+        # legacy channel and Hp(0.07) remains unknown (NULL).
+        connection.execute(
+            """
+            UPDATE historico_dose
+            SET dose_dos = COALESCE(dose_dos, MAX(hp10_dos, hp007_dos, 0)),
+                hp10_dos = COALESCE(hp10_dos, dose_dos),
+                test_session_id = COALESCE(
+                    test_session_id, 'legacy-dose-' || id
+                ),
+                hp10_measurement_id = COALESCE(
+                    hp10_measurement_id, measurement_id
                 )
-                SELECT h.id, h.measurement_id, h.time_bg, h.dosimeter_id,
-                       COALESCE(m.dose_msv, MAX(h.hp10_bg, h.hp007_bg)),
-                       h.status_bg, h.created_at
-                FROM historico_branco h
-                LEFT JOIN measurements m ON m.id = h.measurement_id;
-                DROP TABLE historico_branco;
-                ALTER TABLE historico_branco_v4 RENAME TO historico_branco;
-                """
-            )
-
-        measurement_columns = {
-            row["name"]
-            for row in connection.execute("PRAGMA table_info(measurements)")
-        }
-        if "dose_channel" in measurement_columns:
-            connection.execute(
-                "ALTER TABLE measurements DROP COLUMN dose_channel"
-            )
+            """
+        )
+        connection.execute(
+            """
+            UPDATE historico_branco
+            SET dose_bg = COALESCE(dose_bg, MAX(hp10_bg, hp007_bg, 0)),
+                hp10_bg = COALESCE(hp10_bg, dose_bg),
+                test_session_id = COALESCE(
+                    test_session_id, 'legacy-background-' || id
+                ),
+                hp10_measurement_id = COALESCE(
+                    hp10_measurement_id, measurement_id
+                )
+            """
+        )
 
         connection.executescript(
             """
@@ -598,6 +657,9 @@ class Database:
             CREATE UNIQUE INDEX IF NOT EXISTS idx_historico_dose_measurement
                 ON historico_dose(measurement_id)
                 WHERE measurement_id IS NOT NULL;
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_historico_dose_session
+                ON historico_dose(test_session_id)
+                WHERE test_session_id IS NOT NULL;
             CREATE INDEX IF NOT EXISTS idx_historico_branco_dosimeter_time
                 ON historico_branco(dosimeter_id, time_bg DESC);
             CREATE INDEX IF NOT EXISTS idx_historico_branco_time
@@ -605,6 +667,11 @@ class Database:
             CREATE UNIQUE INDEX IF NOT EXISTS idx_historico_branco_measurement
                 ON historico_branco(measurement_id)
                 WHERE measurement_id IS NOT NULL;
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_historico_branco_session
+                ON historico_branco(test_session_id)
+                WHERE test_session_id IS NOT NULL;
+            CREATE INDEX IF NOT EXISTS idx_measurements_test_session
+                ON measurements(test_session_id, dose_channel);
             """
         )
         connection.execute(
@@ -617,10 +684,12 @@ class Database:
         connection.execute(
             """
             INSERT OR IGNORE INTO historico_dose (
-                measurement_id, time_dos, dosimeter_id, dose_dos,
+                measurement_id, test_session_id, hp10_measurement_id,
+                time_dos, dosimeter_id, hp10_dos, dose_dos,
                 status_dos, created_at
             )
-            SELECT id, measured_at, dosimeter_id, dose_msv,
+            SELECT id, 'legacy-measurement-dose-' || id, id,
+                   measured_at, dosimeter_id, dose_msv, dose_msv,
                    'Need to Erase', created_at
             FROM measurements
             WHERE test_mode = 'DOSIMETER_ID'
@@ -632,10 +701,12 @@ class Database:
         connection.execute(
             """
             INSERT OR IGNORE INTO historico_branco (
-                measurement_id, time_bg, dosimeter_id, dose_bg,
+                measurement_id, test_session_id, hp10_measurement_id,
+                time_bg, dosimeter_id, hp10_bg, dose_bg,
                 status_bg, created_at
             )
-            SELECT id, measured_at, dosimeter_id, dose_msv,
+            SELECT id, 'legacy-measurement-background-' || id, id,
+                   measured_at, dosimeter_id, dose_msv, dose_msv,
                    'Ready to Use', created_at
             FROM measurements
             WHERE test_mode = 'DOSIMETER_ID'
@@ -649,29 +720,69 @@ class Database:
         self,
         dosimeter_id: str,
         *,
-        ecc: float = 1.0,
+        ecc_hp10: float | None = None,
+        ecc_hp007: float | None = None,
+        bc_hp10: float = 0.0,
+        bc_hp007: float = 0.0,
+        ecc: float | None = None,
         begin_date: date | datetime | str,
         end_date: date | datetime | str | None = None,
         active: bool = True,
     ) -> None:
         clean_id = normalize_dosimeter_id(dosimeter_id)
-        clean_ecc = _positive_number(ecc, "ECC")
+        hp10_ecc = _positive_number(
+            ecc_hp10 if ecc_hp10 is not None else (ecc if ecc is not None else 1),
+            "ECC Hp(10)",
+        )
+        hp007_ecc = _positive_number(
+            ecc_hp007 if ecc_hp007 is not None else (
+                ecc if ecc is not None else hp10_ecc
+            ),
+            "ECC Hp(0,07)",
+        )
+        hp10_bc = _non_negative_number(bc_hp10, "BC Hp(10)")
+        hp007_bc = _non_negative_number(bc_hp007, "BC Hp(0,07)")
         begin = normalize_date(begin_date)
         end = normalize_date(end_date) if end_date not in (None, "") else None
         if end is not None and end < begin:
             raise ValueError("A data final não pode ser anterior à data inicial")
         now = utc_now()
         with self.connect() as connection:
-            connection.execute(
-                """
-                INSERT INTO dosimeters (
-                    dosimeter_id, ecc, begin_date, end_date, active,
-                    created_at, updated_at
+            columns = {
+                row["name"]
+                for row in connection.execute("PRAGMA table_info(dosimeters)")
+            }
+            if "ecc" in columns:
+                connection.execute(
+                    """
+                    INSERT INTO dosimeters (
+                        dosimeter_id, ecc, ecc_hp10, ecc_hp007,
+                        bc_hp10, bc_hp007, begin_date, end_date, active,
+                        created_at, updated_at
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        clean_id, hp10_ecc, hp10_ecc, hp007_ecc,
+                        hp10_bc, hp007_bc, begin, end,
+                        _active_value(active), now, now,
+                    ),
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?)
-                """,
-                (clean_id, clean_ecc, begin, end, _active_value(active), now, now),
-            )
+            else:
+                connection.execute(
+                    """
+                    INSERT INTO dosimeters (
+                        dosimeter_id, ecc_hp10, ecc_hp007,
+                        bc_hp10, bc_hp007, begin_date, end_date, active,
+                        created_at, updated_at
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        clean_id, hp10_ecc, hp007_ecc, hp10_bc, hp007_bc,
+                        begin, end, _active_value(active), now, now,
+                    ),
+                )
 
     def get_dosimeter(self, dosimeter_id: str) -> dict[str, Any] | None:
         clean_id = normalize_dosimeter_id(dosimeter_id)
@@ -680,7 +791,11 @@ class Database:
                 "SELECT * FROM dosimeters WHERE dosimeter_id = ?",
                 (clean_id,),
             ).fetchone()
-        return dict(row) if row else None
+        if row is None:
+            return None
+        record = dict(row)
+        record["ecc"] = record["ecc_hp10"]
+        return record
 
     def search_dosimeters(
         self,
@@ -706,39 +821,77 @@ class Database:
                 """,
                 parameters,
             ).fetchall()
-        return [dict(row) for row in rows]
+        records = [dict(row) for row in rows]
+        for record in records:
+            record["ecc"] = record["ecc_hp10"]
+        return records
 
     def update_dosimeter(
         self,
         dosimeter_id: str,
         *,
-        ecc: float,
+        new_dosimeter_id: str | None = None,
+        ecc_hp10: float | None = None,
+        ecc_hp007: float | None = None,
+        bc_hp10: float | None = None,
+        bc_hp007: float | None = None,
+        ecc: float | None = None,
         begin_date: date | datetime | str,
         end_date: date | datetime | str | None = None,
         active: bool,
     ) -> bool:
         clean_id = normalize_dosimeter_id(dosimeter_id)
-        clean_ecc = _positive_number(ecc, "ECC")
+        new_clean_id = normalize_dosimeter_id(
+            new_dosimeter_id if new_dosimeter_id is not None else clean_id
+        )
+        current = self.get_dosimeter(clean_id)
+        if current is None:
+            return False
+        hp10_ecc = _positive_number(
+            ecc_hp10 if ecc_hp10 is not None else (
+                ecc if ecc is not None else current["ecc_hp10"]
+            ),
+            "ECC Hp(10)",
+        )
+        hp007_ecc = _positive_number(
+            ecc_hp007 if ecc_hp007 is not None else (
+                ecc if ecc is not None else current["ecc_hp007"]
+            ),
+            "ECC Hp(0,07)",
+        )
+        hp10_bc = _non_negative_number(
+            current["bc_hp10"] if bc_hp10 is None else bc_hp10,
+            "BC Hp(10)",
+        )
+        hp007_bc = _non_negative_number(
+            current["bc_hp007"] if bc_hp007 is None else bc_hp007,
+            "BC Hp(0,07)",
+        )
         begin = normalize_date(begin_date)
         end = normalize_date(end_date) if end_date not in (None, "") else None
         if end is not None and end < begin:
             raise ValueError("A data final não pode ser anterior à data inicial")
         with self.connect() as connection:
+            columns = {
+                row["name"]
+                for row in connection.execute("PRAGMA table_info(dosimeters)")
+            }
+            legacy_assignment = "ecc = ?, " if "ecc" in columns else ""
+            values = [new_clean_id]
+            values += ([hp10_ecc] if "ecc" in columns else []) + [
+                hp10_ecc, hp007_ecc, hp10_bc, hp007_bc, begin, end,
+                _active_value(active), utc_now(), clean_id,
+            ]
             cursor = connection.execute(
-                """
+                f"""
                 UPDATE dosimeters
-                SET ecc = ?, begin_date = ?, end_date = ?, active = ?,
-                    updated_at = ?
+                SET dosimeter_id = ?,
+                    {legacy_assignment}ecc_hp10 = ?, ecc_hp007 = ?,
+                    bc_hp10 = ?, bc_hp007 = ?, begin_date = ?, end_date = ?,
+                    active = ?, updated_at = ?
                 WHERE dosimeter_id = ?
                 """,
-                (
-                    clean_ecc,
-                    begin,
-                    end,
-                    _active_value(active),
-                    utc_now(),
-                    clean_id,
-                ),
+                values,
             )
             return cursor.rowcount == 1
 
@@ -767,6 +920,42 @@ class Database:
                 (clean_id,),
             )
             return cursor.rowcount == 1
+
+    def delete_dosimeter_with_history(
+        self,
+        dosimeter_id: str,
+    ) -> dict[str, int]:
+        """Delete a dosimeter and all of its linked measurements/history."""
+        clean_id = normalize_dosimeter_id(dosimeter_id)
+        with self.connect() as connection:
+            exists = connection.execute(
+                "SELECT 1 FROM dosimeters WHERE dosimeter_id = ?",
+                (clean_id,),
+            ).fetchone()
+            if exists is None:
+                raise ValueError("Dosímetro não encontrado")
+            dose_rows = connection.execute(
+                "DELETE FROM historico_dose WHERE dosimeter_id = ?",
+                (clean_id,),
+            ).rowcount
+            background_rows = connection.execute(
+                "DELETE FROM historico_branco WHERE dosimeter_id = ?",
+                (clean_id,),
+            ).rowcount
+            measurement_rows = connection.execute(
+                "DELETE FROM measurements WHERE dosimeter_id = ?",
+                (clean_id,),
+            ).rowcount
+            dosimeter_rows = connection.execute(
+                "DELETE FROM dosimeters WHERE dosimeter_id = ?",
+                (clean_id,),
+            ).rowcount
+        return {
+            "dosimeters": dosimeter_rows,
+            "measurements": measurement_rows,
+            "personal_doses": dose_rows,
+            "backgrounds": background_rows,
+        }
 
     def register_reader(
         self,
@@ -835,12 +1024,16 @@ class Database:
         self,
         reader_id: str,
         *,
+        new_reader_id: str | None = None,
         rcf: float,
         begin_date: date | datetime | str,
         end_date: date | datetime | str | None,
         active: bool,
     ) -> bool:
         clean_id = normalize_reader_id(reader_id)
+        new_clean_id = normalize_reader_id(
+            new_reader_id if new_reader_id is not None else clean_id
+        )
         clean_rcf = _positive_number(rcf, "RCF")
         begin = normalize_date(begin_date)
         end = normalize_date(end_date) if end_date not in (None, "") else None
@@ -850,11 +1043,12 @@ class Database:
             cursor = connection.execute(
                 """
                 UPDATE readers
-                SET rcf = ?, begin_date = ?, end_date = ?, active = ?,
+                SET reader_id = ?, rcf = ?, begin_date = ?, end_date = ?, active = ?,
                     updated_at = ?
                 WHERE reader_id = ?
                 """,
                 (
+                    new_clean_id,
                     clean_rcf,
                     begin,
                     end,
@@ -887,6 +1081,64 @@ class Database:
             )
             return cursor.rowcount == 1
 
+    def delete_reader_with_measurements(
+        self,
+        reader_id: str,
+    ) -> dict[str, int]:
+        """Delete a reader and acquisitions/history that reference it."""
+        clean_id = normalize_reader_id(reader_id)
+        with self.connect() as connection:
+            exists = connection.execute(
+                "SELECT 1 FROM readers WHERE reader_id = ?",
+                (clean_id,),
+            ).fetchone()
+            if exists is None:
+                raise ValueError("Leitora não encontrada")
+            dose_rows = connection.execute(
+                """
+                DELETE FROM historico_dose
+                WHERE measurement_id IN (
+                    SELECT id FROM measurements WHERE reader_id = ?
+                )
+                   OR hp10_measurement_id IN (
+                    SELECT id FROM measurements WHERE reader_id = ?
+                )
+                   OR hp007_measurement_id IN (
+                    SELECT id FROM measurements WHERE reader_id = ?
+                )
+                """,
+                (clean_id, clean_id, clean_id),
+            ).rowcount
+            background_rows = connection.execute(
+                """
+                DELETE FROM historico_branco
+                WHERE measurement_id IN (
+                    SELECT id FROM measurements WHERE reader_id = ?
+                )
+                   OR hp10_measurement_id IN (
+                    SELECT id FROM measurements WHERE reader_id = ?
+                )
+                   OR hp007_measurement_id IN (
+                    SELECT id FROM measurements WHERE reader_id = ?
+                )
+                """,
+                (clean_id, clean_id, clean_id),
+            ).rowcount
+            measurement_rows = connection.execute(
+                "DELETE FROM measurements WHERE reader_id = ?",
+                (clean_id,),
+            ).rowcount
+            reader_rows = connection.execute(
+                "DELETE FROM readers WHERE reader_id = ?",
+                (clean_id,),
+            ).rowcount
+        return {
+            "readers": reader_rows,
+            "measurements": measurement_rows,
+            "personal_doses": dose_rows,
+            "backgrounds": background_rows,
+        }
+
     def get_valid_dosimeter_for_test(
         self,
         dosimeter_id: str,
@@ -909,7 +1161,10 @@ class Database:
             and check_date > record["end_date"]
         ):
             raise ValueError("Dosímetro fora do período de validade")
-        _positive_number(record["ecc"], "ECC")
+        _positive_number(record["ecc_hp10"], "ECC Hp(10)")
+        _positive_number(record["ecc_hp007"], "ECC Hp(0,07)")
+        _non_negative_number(record["bc_hp10"], "BC Hp(10)")
+        _non_negative_number(record["bc_hp007"], "BC Hp(0,07)")
         return record
 
     def get_valid_reader_for_test(
@@ -944,6 +1199,8 @@ class Database:
         *,
         test_mode: str | None = None,
         reading_type: str | None = None,
+        dose_channel: str | None = None,
+        test_session_id: str | None = None,
         file_name: str = "",
         file_path: str | Path | None = None,
         count_01s: int = 0,
@@ -955,7 +1212,7 @@ class Database:
         rcf_applied: float | None = None,
         fang_applied: float = 1.0,
         fenerg_applied: float = 1.0,
-        baseline_applied: float = 0.0,
+        baseline_applied: float | None = None,
         measured_at: datetime | str | None = None,
         status: str = "EM_ANDAMENTO",
         notes: str | None = None,
@@ -968,6 +1225,8 @@ class Database:
         if mode not in VALID_TEST_MODES:
             raise ValueError("test_mode deve ser MANUAL ou DOSIMETER_ID")
         clean_reading_type: str | None = None
+        clean_dose_channel: str | None = None
+        clean_test_session_id: str | None = None
         if mode == "DOSIMETER_ID":
             clean_reading_type = str(
                 reading_type or "PERSONAL_DOSE"
@@ -976,6 +1235,14 @@ class Database:
                 raise ValueError(
                     "reading_type deve ser PERSONAL_DOSE ou BACKGROUND"
                 )
+            clean_dose_channel = str(dose_channel or "HP10").strip().upper()
+            if clean_dose_channel not in VALID_DOSE_CHANNELS:
+                raise ValueError("dose_channel deve ser HP10 ou HP007")
+            clean_test_session_id = str(
+                test_session_id or uuid4().hex
+            ).strip()
+            if not clean_test_session_id or len(clean_test_session_id) > 64:
+                raise ValueError("test_session_id inválido")
         clean_status = status.strip().upper()
         if clean_status not in VALID_MEASUREMENT_STATUSES:
             raise ValueError("status de medição inválido")
@@ -1008,9 +1275,21 @@ class Database:
             )
 
         if ecc_applied is None:
-            ecc_applied = dosimeter["ecc"] if dosimeter else 1.0
+            if dosimeter and clean_dose_channel == "HP007":
+                ecc_applied = dosimeter["ecc_hp007"]
+            elif dosimeter:
+                ecc_applied = dosimeter["ecc_hp10"]
+            else:
+                ecc_applied = 1.0
         if rcf_applied is None:
             rcf_applied = reader["rcf"] if reader else 1.0
+        if baseline_applied is None:
+            if dosimeter and clean_dose_channel == "HP007":
+                baseline_applied = dosimeter["bc_hp007"]
+            elif dosimeter:
+                baseline_applied = dosimeter["bc_hp10"]
+            else:
+                baseline_applied = 0.0
 
         values = {
             "count_01s": _count_value(count_01s),
@@ -1035,7 +1314,8 @@ class Database:
             cursor = connection.execute(
                 """
                 INSERT INTO measurements (
-                    measured_at, test_mode, reading_type, reader_id,
+                    measured_at, test_mode, reading_type, dose_channel,
+                    test_session_id, reader_id,
                     dosimeter_id, file_name, file_path,
                     count_01s, current_ma, light_mv, raw_signal, dose_msv,
                     ecc_applied, rcf_applied, fang_applied,
@@ -1044,13 +1324,15 @@ class Database:
                 )
                 VALUES (
                     ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-                    ?, ?, ?
+                    ?, ?, ?, ?, ?
                 )
                 """,
                 (
                     measurement_time,
                     mode,
                     clean_reading_type,
+                    clean_dose_channel,
+                    clean_test_session_id,
                     clean_reader_id,
                     clean_dosimeter_id,
                     clean_file_name,
@@ -1188,7 +1470,7 @@ class Database:
         self,
         measurement_id: int,
     ) -> dict[str, Any] | None:
-        """Copy one completed dosimeter acquisition into its typed history."""
+        """Consolidate a dosimeter session after both channels are complete."""
         clean_id = int(measurement_id)
         with self.connect() as connection:
             measurement = connection.execute(
@@ -1206,23 +1488,64 @@ class Database:
             reading_type = measurement["reading_type"] or "PERSONAL_DOSE"
             if reading_type not in VALID_READING_TYPES:
                 raise ValueError("Tipo de leitura da medição é inválido")
-            dose = float(measurement["dose_msv"])
+            test_session_id = measurement["test_session_id"]
+            dose_channel = measurement["dose_channel"]
+            if not test_session_id or dose_channel not in VALID_DOSE_CHANNELS:
+                return None
+            acquisitions = connection.execute(
+                """
+                SELECT *
+                FROM measurements
+                WHERE test_session_id = ?
+                  AND test_mode = 'DOSIMETER_ID'
+                  AND reading_type = ?
+                  AND dosimeter_id = ?
+                  AND status = 'CONCLUIDO'
+                  AND dose_channel IN ('HP10', 'HP007')
+                ORDER BY id DESC
+                """,
+                (
+                    test_session_id,
+                    reading_type,
+                    measurement["dosimeter_id"],
+                ),
+            ).fetchall()
+            by_channel: dict[str, sqlite3.Row] = {}
+            for acquisition in acquisitions:
+                by_channel.setdefault(acquisition["dose_channel"], acquisition)
+            if set(by_channel) != VALID_DOSE_CHANNELS:
+                return None
+
+            hp10 = by_channel["HP10"]
+            hp007 = by_channel["HP007"]
+            pair_time = max(hp10["measured_at"], hp007["measured_at"])
+            aggregate_dose = max(
+                float(hp10["dose_msv"]),
+                float(hp007["dose_msv"]),
+            )
 
             if reading_type == "PERSONAL_DOSE":
                 table = "historico_dose"
                 connection.execute(
                     """
                     INSERT OR IGNORE INTO historico_dose (
-                        measurement_id, time_dos, dosimeter_id, dose_dos,
-                        status_dos, created_at
+                        measurement_id, test_session_id,
+                        hp10_measurement_id, hp007_measurement_id,
+                        time_dos, dosimeter_id, hp10_dos, hp007_dos,
+                        dose_dos, status_dos, created_at
                     )
-                    VALUES (?, ?, ?, ?, ?, ?)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
-                        clean_id,
-                        measurement["measured_at"],
+                        hp007["id"],
+                        test_session_id,
+                        hp10["id"],
+                        hp007["id"],
+                        pair_time,
                         measurement["dosimeter_id"],
-                        dose,
+                        hp10["dose_msv"],
+                        hp007["dose_msv"],
+                        aggregate_dose,
                         PERSONAL_DOSE_STATUS,
                         utc_now(),
                     ),
@@ -1232,31 +1555,71 @@ class Database:
                 connection.execute(
                     """
                     INSERT OR IGNORE INTO historico_branco (
-                        measurement_id, time_bg, dosimeter_id, dose_bg,
-                        status_bg, created_at
+                        measurement_id, test_session_id,
+                        hp10_measurement_id, hp007_measurement_id,
+                        time_bg, dosimeter_id, hp10_bg, hp007_bg,
+                        dose_bg, status_bg, created_at
                     )
-                    VALUES (?, ?, ?, ?, ?, ?)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
-                        clean_id,
-                        measurement["measured_at"],
+                        hp007["id"],
+                        test_session_id,
+                        hp10["id"],
+                        hp007["id"],
+                        pair_time,
                         measurement["dosimeter_id"],
-                        dose,
+                        hp10["dose_msv"],
+                        hp007["dose_msv"],
+                        aggregate_dose,
                         BACKGROUND_STATUS,
                         utc_now(),
                     ),
                 )
             row = connection.execute(
-                f"SELECT * FROM {table} WHERE measurement_id = ?",
-                (clean_id,),
+                f"SELECT * FROM {table} WHERE test_session_id = ?",
+                (test_session_id,),
             ).fetchone()
         return dict(row) if row else None
+
+    def get_test_session_progress(
+        self,
+        test_session_id: str,
+    ) -> dict[str, Any]:
+        """Return the completed channels for one two-acquisition test."""
+        clean_session_id = str(test_session_id).strip()
+        if not clean_session_id:
+            raise ValueError("test_session_id inválido")
+        with self.connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT dose_channel, id, status
+                FROM measurements
+                WHERE test_session_id = ?
+                ORDER BY id
+                """,
+                (clean_session_id,),
+            ).fetchall()
+        completed = {
+            row["dose_channel"]
+            for row in rows
+            if row["status"] == "CONCLUIDO"
+            and row["dose_channel"] in VALID_DOSE_CHANNELS
+        }
+        return {
+            "test_session_id": clean_session_id,
+            "completed_channels": completed,
+            "complete": completed == VALID_DOSE_CHANNELS,
+            "measurements": [dict(row) for row in rows],
+        }
 
     def add_personal_dose(
         self,
         dosimeter_id: str,
         *,
-        dose_dos: float,
+        hp10_dos: float | None = None,
+        hp007_dos: float | None = None,
+        dose_dos: float | None = None,
         time_dos: datetime | str | None = None,
         status_dos: str = PERSONAL_DOSE_STATUS,
     ) -> int:
@@ -1269,18 +1632,29 @@ class Database:
             raise ValueError(
                 f"status_dos deve ser '{PERSONAL_DOSE_STATUS}'"
             )
+        if hp10_dos is None and hp007_dos is None and dose_dos is not None:
+            hp10_dos = dose_dos
+            hp007_dos = dose_dos
+        if hp10_dos is None or hp007_dos is None:
+            raise ValueError("Informe Hp(10) e Hp(0,07)")
+        hp10 = _non_negative_number(hp10_dos, "Hp(10)")
+        hp007 = _non_negative_number(hp007_dos, "Hp(0,07)")
         with self.connect() as connection:
             cursor = connection.execute(
                 """
                 INSERT INTO historico_dose (
-                    time_dos, dosimeter_id, dose_dos, status_dos, created_at
+                    test_session_id, time_dos, dosimeter_id,
+                    hp10_dos, hp007_dos, dose_dos, status_dos, created_at
                 )
-                VALUES (?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
+                    f"manual-dose-{uuid4().hex}",
                     normalize_datetime(time_dos),
                     clean_id,
-                    _non_negative_number(dose_dos, "Dose"),
+                    hp10,
+                    hp007,
+                    max(hp10, hp007),
                     PERSONAL_DOSE_STATUS,
                     utc_now(),
                 ),
@@ -1335,7 +1709,9 @@ class Database:
         self,
         dosimeter_id: str,
         *,
-        dose_bg: float,
+        hp10_bg: float | None = None,
+        hp007_bg: float | None = None,
+        dose_bg: float | None = None,
         time_bg: datetime | str | None = None,
         status_bg: str = BACKGROUND_STATUS,
     ) -> int:
@@ -1346,18 +1722,29 @@ class Database:
         clean_status = str(status_bg).strip()
         if clean_status.casefold() != BACKGROUND_STATUS.casefold():
             raise ValueError(f"status_bg deve ser '{BACKGROUND_STATUS}'")
+        if hp10_bg is None and hp007_bg is None and dose_bg is not None:
+            hp10_bg = dose_bg
+            hp007_bg = dose_bg
+        if hp10_bg is None or hp007_bg is None:
+            raise ValueError("Informe Hp(10) e Hp(0,07)")
+        hp10 = _non_negative_number(hp10_bg, "Hp(10)")
+        hp007 = _non_negative_number(hp007_bg, "Hp(0,07)")
         with self.connect() as connection:
             cursor = connection.execute(
                 """
                 INSERT INTO historico_branco (
-                    time_bg, dosimeter_id, dose_bg, status_bg, created_at
+                    test_session_id, time_bg, dosimeter_id,
+                    hp10_bg, hp007_bg, dose_bg, status_bg, created_at
                 )
-                VALUES (?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
+                    f"manual-background-{uuid4().hex}",
                     normalize_datetime(time_bg),
                     clean_id,
-                    _non_negative_number(dose_bg, "Dose de background"),
+                    hp10,
+                    hp007,
+                    max(hp10, hp007),
                     BACKGROUND_STATUS,
                     utc_now(),
                 ),
@@ -1403,13 +1790,19 @@ class Database:
         *,
         at_time: datetime | str | None = None,
         default: float = 0.0,
+        dose_channel: str = "HP10",
     ) -> float:
         """Return the latest dose background or the configured default."""
         fallback = _non_negative_number(default, "Background padrão")
         record = self.get_latest_background(dosimeter_id, at_time=at_time)
         if record is None:
             return fallback
-        return float(record["dose_bg"])
+        channel = str(dose_channel).strip().upper()
+        if channel not in VALID_DOSE_CHANNELS:
+            raise ValueError("dose_channel deve ser HP10 ou HP007")
+        field = "hp007_bg" if channel == "HP007" else "hp10_bg"
+        value = record.get(field)
+        return float(record["dose_bg"] if value is None else value)
 
     def calculate_net_personal_dose(
         self,
@@ -1419,6 +1812,7 @@ class Database:
         dose_reading: float,
         measured_at: datetime | str | None = None,
         default_background: float = 0.0,
+        dose_channel: str = "HP10",
     ) -> dict[str, float]:
         """Subtract the latest same-dosimeter background from a dose in mSv."""
         measurement_time = normalize_datetime(measured_at)
@@ -1436,8 +1830,16 @@ class Database:
             dosimeter["dosimeter_id"],
             at_time=measurement_time,
             default=default_background,
+            dose_channel=dose_channel,
         )
-        ecc = float(dosimeter["ecc"])
+        channel = str(dose_channel).strip().upper()
+        if channel not in VALID_DOSE_CHANNELS:
+            raise ValueError("dose_channel deve ser HP10 ou HP007")
+        ecc = float(
+            dosimeter["ecc_hp007"]
+            if channel == "HP007"
+            else dosimeter["ecc_hp10"]
+        )
         rcf = float(reader["rcf"])
         return {
             "dose_msv": max(0.0, dose - background),

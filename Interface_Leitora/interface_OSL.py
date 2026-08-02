@@ -6,6 +6,7 @@ from datetime import datetime
 from math import hypot
 from pathlib import Path
 from threading import Thread
+from uuid import uuid4
 
 import serial
 import serial.tools.list_ports
@@ -107,43 +108,9 @@ class BotaoNavegacaoParametros(Button):
 
 
 class EntradaData(TextInput):
-    """TextInput com máscara automática dd/mm/aaaa."""
+    """Campo de data com digitação livre, sem inserir barras automaticamente."""
 
-    def __init__(self, **kwargs):
-        super().__init__(**kwargs)
-        self._formatacao_agendada = False
-        self._texto_anterior = self.text
-        self._excluindo = False
-        self.bind(text=self._agendar_formatacao)
-
-    def _agendar_formatacao(self, *args):
-        if self._formatacao_agendada:
-            return
-        self._excluindo = len(self.text) < len(self._texto_anterior)
-        self._formatacao_agendada = True
-        Clock.schedule_once(self._aplicar_mascara, 0)
-
-    def _aplicar_mascara(self, dt):
-        self._formatacao_agendada = False
-        digitos = "".join(
-            caractere for caractere in self.text if caractere.isdigit()
-        )[:8]
-        partes = [digitos[:2]]
-        if len(digitos) > 2:
-            partes.append(digitos[2:4])
-        if len(digitos) > 4:
-            partes.append(digitos[4:8])
-        formatado = "/".join(partes)
-        # Ao apagar a barra com Backspace, não a recria imediatamente.
-        # Caso contrário o cursor fica preso depois de "20/07/".
-        if len(digitos) in (2, 4) and not self._excluindo:
-            formatado += "/"
-
-        if self.text != formatado:
-            self.text = formatado
-        self._texto_anterior = self.text
-        self._excluindo = False
-        self.cursor = (len(self.text), 0)
+    pass
 
 
 class GraficoTempoReal(Widget):
@@ -643,13 +610,19 @@ class ArvoreArquivos(TreeView):
 class TelaPrincipalLeitora(Screen):
     test_mode = StringProperty("MANUAL")
     reading_type = StringProperty("PERSONAL_DOSE")
+    dose_channel = StringProperty("HP10")
     dosimeter_status = StringProperty(
         "Aguardando leitura do código de barras"
     )
     start_allowed = BooleanProperty(False)
     loaded_ecc = StringProperty("—")
+    loaded_bc = StringProperty("—")
     loaded_rcf = StringProperty("—")
     automatic_file_name = StringProperty("—")
+    acquisition_active = BooleanProperty(False)
+    test_session_active = BooleanProperty(False)
+    hp10_complete = BooleanProperty(False)
+    hp007_complete = BooleanProperty(False)
 
     soma = 0
     contador = 0.1
@@ -690,6 +663,9 @@ class TelaPrincipalLeitora(Screen):
         self.validated_dosimeter = None
         self.validated_reader = None
         self.applied_parameters = None
+        self.active_test_session_id = None
+        self.active_test_dosimeter_id = None
+        self.active_test_reading_type = None
         Clock.schedule_once(self.atualizar_portas_serial, 0)
         Clock.schedule_once(self.atualizar_leitoras_cadastradas, 0)
         # O tamanho do conteúdo do ScrollView só fica definitivo após o
@@ -721,7 +697,14 @@ class TelaPrincipalLeitora(Screen):
                 "Finalize ou interrompa a leitura antes de trocar o modo."
             )
             return
+        if self.test_session_active:
+            self.atualizar_status(
+                "Conclua Hp(10) e Hp(0,07) antes de trocar o modo."
+            )
+            return
         self.test_mode = normalized_mode
+        if normalized_mode == "MANUAL":
+            self.reading_type = "PERSONAL_DOSE"
         self.start_allowed = normalized_mode == "MANUAL"
         if normalized_mode == "DOSIMETER_ID":
             self.atualizar_leitoras_cadastradas()
@@ -737,10 +720,16 @@ class TelaPrincipalLeitora(Screen):
             )
             return
         if self.test_mode == "DOSIMETER_ID":
+            if self.test_session_active:
+                self.atualizar_status(
+                    "Conclua o teste atual antes de realizar outro zeramento."
+                )
+                return
             self.reading_type = "BACKGROUND"
             self.atualizar_status(
-                "Apagamento iniciado; a próxima leitura será Background."
+                "Zeramento iniciado; Hp(10) e Hp(0,07) serão Linha de Base."
             )
+            self._atualizar_parametros_grandeza()
         self.enviar_comando_sudo("zerar")
 
     def agendar_foco_dosimetro(self, selecionar=True):
@@ -762,6 +751,8 @@ class TelaPrincipalLeitora(Screen):
 
     def dosimetro_texto_alterado(self, value):
         if self.test_mode != "DOSIMETER_ID":
+            return
+        if self.test_session_active:
             return
         normalized = scanner_text(value)
         current_id = (
@@ -806,12 +797,12 @@ class TelaPrincipalLeitora(Screen):
 
         self.validated_dosimeter = dosimeter
         self.validated_reader = reader
-        self.loaded_ecc = self._formatar_coeficiente(dosimeter["ecc"])
         self.loaded_rcf = self._formatar_coeficiente(reader["rcf"])
-        self.automatic_file_name = dosimeter_filename(normalized)
+        self._atualizar_parametros_grandeza()
         self.dosimeter_status = (
             f"Dosímetro válido • leitora {reader['reader_id']} • "
-            "pressione Start para iniciar"
+            f"{self._nome_grandeza(self.dose_channel)} selecionado • "
+            "pressione Start"
         )
         self.start_allowed = True
         self.agendar_foco_dosimetro()
@@ -825,6 +816,59 @@ class TelaPrincipalLeitora(Screen):
                 return
             if scanner_text(field.text):
                 self.confirmar_codigo_dosimetro()
+
+    @staticmethod
+    def _nome_grandeza(channel):
+        return "Hp(0,07)" if channel == "HP007" else "Hp(10)"
+
+    def selecionar_grandeza(self, channel):
+        normalized = str(channel).strip().upper()
+        if normalized not in ("HP10", "HP007"):
+            raise ValueError("Grandeza deve ser Hp(10) ou Hp(0,07)")
+        if self.log_arquivo:
+            self.atualizar_status(
+                "Finalize a aquisição atual antes de trocar a grandeza."
+            )
+            return False
+        if self.test_session_active and normalized != self.dose_channel:
+            self.atualizar_status(
+                f"Conclua {self._nome_grandeza(self.dose_channel)} antes de "
+                "comutar a grandeza."
+            )
+            return False
+        if self.test_session_active and (
+            (normalized == "HP10" and self.hp10_complete)
+            or (normalized == "HP007" and self.hp007_complete)
+        ):
+            self.atualizar_status(
+                f"{self._nome_grandeza(normalized)} já foi concluído nesta sessão."
+            )
+            return False
+        self.dose_channel = normalized
+        self._atualizar_parametros_grandeza()
+        if self.validated_dosimeter:
+            self.dosimeter_status = (
+                f"{self._nome_grandeza(normalized)} selecionado • pressione Start"
+            )
+        return True
+
+    def _atualizar_parametros_grandeza(self):
+        dosimeter = self.validated_dosimeter
+        if not dosimeter:
+            return
+        if self.dose_channel == "HP007":
+            ecc = dosimeter["ecc_hp007"]
+            baseline = dosimeter["bc_hp007"]
+        else:
+            ecc = dosimeter["ecc_hp10"]
+            baseline = dosimeter["bc_hp10"]
+        self.loaded_ecc = self._formatar_coeficiente(ecc)
+        self.loaded_bc = self._formatar_coeficiente(baseline)
+        self.automatic_file_name = dosimeter_filename(
+            dosimeter["dosimeter_id"],
+            dose_channel=self.dose_channel,
+            reading_type=self.reading_type,
+        )
 
     def atualizar_leitoras_cadastradas(self, *_args):
         try:
@@ -853,6 +897,13 @@ class TelaPrincipalLeitora(Screen):
             self.ids.dosimeter_id_input.text = ""
         except KeyError:
             pass
+        self.active_test_session_id = None
+        self.active_test_dosimeter_id = None
+        self.active_test_reading_type = None
+        self.test_session_active = False
+        self.hp10_complete = False
+        self.hp007_complete = False
+        self.dose_channel = "HP10"
         self._invalidar_dosimetro(
             "Aguardando leitura do código de barras"
         )
@@ -862,6 +913,7 @@ class TelaPrincipalLeitora(Screen):
         self.validated_dosimeter = None
         self.validated_reader = None
         self.loaded_ecc = "—"
+        self.loaded_bc = "—"
         self.loaded_rcf = "—"
         if not preserve_filename:
             self.automatic_file_name = "—"
@@ -873,11 +925,6 @@ class TelaPrincipalLeitora(Screen):
         return f"{float(value):.10g}"
 
     def _preparar_contexto_teste(self):
-        baseline = parse_number(
-            self.ids.branco_textInput.text,
-            "Base Line",
-            positive=False,
-        )
         fang = parse_number(
             self.ids.fcal_textInput.text,
             "Fang",
@@ -890,6 +937,11 @@ class TelaPrincipalLeitora(Screen):
         )
 
         if self.test_mode == "MANUAL":
+            baseline = parse_number(
+                self.ids.branco_textInput.text,
+                "Base Line",
+                positive=False,
+            )
             ecc = parse_number(
                 self.ids.ecc_textInput.text,
                 "ECC",
@@ -920,14 +972,36 @@ class TelaPrincipalLeitora(Screen):
         ):
             if not self.confirmar_codigo_dosimetro():
                 raise ValueError(self.dosimeter_status)
+        dosimeter_id = self.validated_dosimeter["dosimeter_id"]
+        if self.test_session_active and (
+            dosimeter_id != self.active_test_dosimeter_id
+            or self.reading_type != self.active_test_reading_type
+        ):
+            raise ValueError(
+                "A sessão atual deve ser concluída com o mesmo dosímetro e tipo."
+            )
+        if self.active_test_session_id is None:
+            self.active_test_session_id = uuid4().hex
+            self.active_test_dosimeter_id = dosimeter_id
+            self.active_test_reading_type = self.reading_type
+            self.test_session_active = True
+        if self.dose_channel == "HP007":
+            ecc = float(self.validated_dosimeter["ecc_hp007"])
+            baseline = float(self.validated_dosimeter["bc_hp007"])
+        else:
+            ecc = float(self.validated_dosimeter["ecc_hp10"])
+            baseline = float(self.validated_dosimeter["bc_hp10"])
+        self._atualizar_parametros_grandeza()
         file_name = safe_test_filename(self.automatic_file_name)
         return {
             "test_mode": "DOSIMETER_ID",
             "reading_type": self.reading_type,
+            "dose_channel": self.dose_channel,
+            "test_session_id": self.active_test_session_id,
             "reader_id": self.validated_reader["reader_id"],
-            "dosimeter_id": self.validated_dosimeter["dosimeter_id"],
+            "dosimeter_id": dosimeter_id,
             "file_name": file_name,
-            "ecc": float(self.validated_dosimeter["ecc"]),
+            "ecc": ecc,
             "rcf": float(self.validated_reader["rcf"]),
             "fang": fang,
             "fenerg": fenerg,
@@ -958,6 +1032,8 @@ class TelaPrincipalLeitora(Screen):
                 dosimeter_id=context["dosimeter_id"],
                 test_mode=context["test_mode"],
                 reading_type=context.get("reading_type"),
+                dose_channel=context.get("dose_channel"),
+                test_session_id=context.get("test_session_id"),
                 file_name=nome_arquivo,
                 ecc_applied=context["ecc"],
                 rcf_applied=context["rcf"],
@@ -1000,6 +1076,12 @@ class TelaPrincipalLeitora(Screen):
             self.soma_luz = 0
             self.nova_linha = True
             self.ids.grafico_tempo_real.limpar()
+            self.acquisition_active = True
+            if self.test_mode == "DOSIMETER_ID":
+                self.dosimeter_status = (
+                    f"Lendo {self._nome_grandeza(self.dose_channel)} • "
+                    "aguarde o término da leitura"
+                )
             self.enviar_comando_sudo("leitura")
             return True
 
@@ -1007,6 +1089,7 @@ class TelaPrincipalLeitora(Screen):
             self._atualizar_medicao_com_erro(str(erro))
             self.current_measurement_id = None
             self.log_arquivo = None
+            self.acquisition_active = False
             self.atualizar_status(f"Erro ao criar arquivo: {erro}")
             return False
 
@@ -1014,6 +1097,13 @@ class TelaPrincipalLeitora(Screen):
         if not self.log_arquivo:
             return
         nome = self.log_arquivo.name
+        completed_channel = (
+            self.applied_parameters.get("dose_channel")
+            if self.applied_parameters
+            else None
+        )
+        test_complete = False
+        final_status = status
         try:
             dose = self.atualizar_soma_no_log()
             self.log_arquivo = open(
@@ -1024,17 +1114,24 @@ class TelaPrincipalLeitora(Screen):
             self.log_arquivo.write(self.string_log)
             self.log_arquivo.close()
             self.log_arquivo = None
-            self._finalizar_medicao(status, dose, notes)
+            test_complete = self._finalizar_medicao(status, dose, notes)
             self.atualizar_status(f"Log encerrado: {nome}")
         except (OSError, sqlite3.Error, TypeError, ValueError) as error:
+            final_status = "ERRO"
             self.log_arquivo = None
             self._atualizar_medicao_com_erro(str(error))
             self.atualizar_status(f"Erro ao finalizar leitura: {error}")
         finally:
+            self.acquisition_active = False
             if self.test_mode == "MANUAL":
                 self.ids.nome_arquivo_input.text = ""
-            else:
+            elif test_complete:
                 self.preparar_proximo_dosimetro()
+            else:
+                self._preparar_proxima_grandeza(
+                    completed_channel,
+                    status=final_status,
+                )
             self.applied_parameters = None
             self.current_measurement_id = None
 
@@ -1093,7 +1190,7 @@ class TelaPrincipalLeitora(Screen):
 
     def _finalizar_medicao(self, status, dose, notes=None):
         if self.current_measurement_id is None:
-            return
+            return False
         self.obter_database().update_measurement(
             self.current_measurement_id,
             count_01s=self.valor_count,
@@ -1106,14 +1203,42 @@ class TelaPrincipalLeitora(Screen):
             notes=notes,
         )
         if status == "CONCLUIDO":
-            self.obter_database().sync_measurement_history(
+            history = self.obter_database().sync_measurement_history(
                 self.current_measurement_id
             )
-            if (
+            if history is not None and (
                 self.applied_parameters
                 and self.applied_parameters.get("reading_type") == "BACKGROUND"
             ):
                 self.reading_type = "PERSONAL_DOSE"
+            return history is not None
+        return False
+
+    def _preparar_proxima_grandeza(self, completed_channel, *, status):
+        if self.test_mode != "DOSIMETER_ID" or not self.test_session_active:
+            return
+        if status == "CONCLUIDO" and completed_channel == "HP10":
+            self.hp10_complete = True
+        elif status == "CONCLUIDO" and completed_channel == "HP007":
+            self.hp007_complete = True
+
+        if status != "CONCLUIDO":
+            self.dosimeter_status = (
+                f"{self._nome_grandeza(self.dose_channel)} não foi concluído • "
+                "pressione Start para repetir"
+            )
+            self.start_allowed = True
+            self._atualizar_parametros_grandeza()
+            return
+
+        missing_channel = "HP007" if not self.hp007_complete else "HP10"
+        self.dose_channel = missing_channel
+        self._atualizar_parametros_grandeza()
+        self.dosimeter_status = (
+            f"{self._nome_grandeza(completed_channel)} concluído • "
+            f"faça a leitura de {self._nome_grandeza(missing_channel)}"
+        )
+        self.start_allowed = True
 
     def _atualizar_medicao_com_erro(self, notes):
         if self.current_measurement_id is None:
@@ -1573,7 +1698,10 @@ class TelaBancoDados(Screen):
         self._editing_dosimeter_id = None
         for field_id in (
             "db_dosimeter_id",
-            "db_dosimeter_ecc",
+            "db_dosimeter_ecc_hp10",
+            "db_dosimeter_ecc_hp007",
+            "db_dosimeter_bc_hp10",
+            "db_dosimeter_bc_hp007",
             "db_dosimeter_begin",
             "db_dosimeter_end",
         ):
@@ -1585,33 +1713,41 @@ class TelaBancoDados(Screen):
     def salvar_dosimetro(self):
         dosimeter_id = self.ids.db_dosimeter_id.text
         values = {
-            "ecc": self.ids.db_dosimeter_ecc.text.replace(",", "."),
+            "ecc_hp10": self.ids.db_dosimeter_ecc_hp10.text.replace(",", "."),
+            "ecc_hp007": self.ids.db_dosimeter_ecc_hp007.text.replace(",", "."),
+            "bc_hp10": self.ids.db_dosimeter_bc_hp10.text.replace(",", "."),
+            "bc_hp007": self.ids.db_dosimeter_bc_hp007.text.replace(",", "."),
             "begin_date": self.ids.db_dosimeter_begin.text,
             "end_date": self.ids.db_dosimeter_end.text or None,
             "active": self.ids.db_dosimeter_active.active,
         }
+        saved_id = None
         try:
             if self._editing_dosimeter_id is None:
                 self.obter_database().register_dosimeter(
                     dosimeter_id,
                     **values,
                 )
+                saved_id = dosimeter_id.strip()
                 message = "Dosímetro cadastrado com sucesso"
             else:
-                if dosimeter_id.strip() != self._editing_dosimeter_id:
-                    raise ValueError("O ID do dosímetro não pode ser alterado")
                 if not self.obter_database().update_dosimeter(
-                    dosimeter_id,
+                    self._editing_dosimeter_id,
+                    new_dosimeter_id=dosimeter_id,
                     **values,
                 ):
                     raise ValueError("Dosímetro não encontrado")
+                saved_id = dosimeter_id.strip()
+                self._editing_dosimeter_id = saved_id
                 message = "Dosímetro atualizado com sucesso"
         except sqlite3.IntegrityError:
             message = "Dosímetro já cadastrado"
         except (TypeError, ValueError, sqlite3.Error) as error:
             message = str(error)
-        self.dosimeter_message = message
+        if saved_id:
+            self.ids.db_dosimeter_search.text = saved_id
         self.pesquisar_dosimetros()
+        self.dosimeter_message = message
 
     def pesquisar_dosimetros(self):
         try:
@@ -1627,16 +1763,46 @@ class TelaBancoDados(Screen):
         self._renderizar_dataframe(
             container,
             dataframe,
-            widths=(0.25, 0.12, 0.20, 0.20, 0.23),
-            alignments=("left", "right", "center", "center", "center"),
+            widths=(0.17, 0.11, 0.12, 0.10, 0.11, 0.14, 0.14, 0.11),
+            alignments=(
+                "left", "right", "right", "right", "right", "center",
+                "center", "center",
+            ),
             selection_callback=self.selecionar_dosimetro,
         )
+        search_text = self.ids.db_dosimeter_search.text.strip()
+        if (
+            len(rows) == 1
+            and search_text
+            and rows[0]["dosimeter_id"] == search_text
+        ):
+            self.selecionar_dosimetro(rows[0])
+
+    def carregar_dosimetro_por_id(self, dosimeter_id=None):
+        dosimeter_id = (
+            dosimeter_id or self.ids.db_dosimeter_id.text
+        ).strip()
+        if not dosimeter_id:
+            return False
+        try:
+            record = self.obter_database().get_dosimeter(dosimeter_id)
+        except (sqlite3.Error, RuntimeError, ValueError) as error:
+            self.dosimeter_message = f"Erro ao carregar dosímetro: {error}"
+            return False
+        if record is None:
+            return False
+        self.ids.db_dosimeter_search.text = dosimeter_id
+        self.selecionar_dosimetro(record)
+        return True
 
     def selecionar_dosimetro(self, record):
         self._editing_dosimeter_id = record["dosimeter_id"]
         self.ids.db_dosimeter_id.text = record["dosimeter_id"]
-        self.ids.db_dosimeter_id.disabled = True
-        self.ids.db_dosimeter_ecc.text = f"{record['ecc']:.10g}"
+        self.ids.db_dosimeter_id.disabled = False
+        self.ids.db_dosimeter_ecc_hp10.text = f"{record['ecc_hp10']:.10g}"
+        self.ids.db_dosimeter_ecc_hp007.text = f"{record['ecc_hp007']:.10g}"
+        self.ids.db_dosimeter_bc_hp10.text = f"{record['bc_hp10']:.10g}"
+        self.ids.db_dosimeter_bc_hp007.text = f"{record['bc_hp007']:.10g}"
         self.ids.db_dosimeter_begin.text = self._date_for_display(
             record["begin_date"]
         )
@@ -1645,6 +1811,76 @@ class TelaBancoDados(Screen):
         )
         self.ids.db_dosimeter_active.active = bool(record["active"])
         self.dosimeter_message = "Dosímetro selecionado para edição"
+
+    def excluir_dosimetro(self):
+        if self._leitura_em_andamento():
+            self.dosimeter_message = (
+                "Finalize a leitura atual antes de excluir um dosímetro."
+            )
+            return
+        dosimeter_id = (
+            self._editing_dosimeter_id
+            or self.ids.db_dosimeter_id.text.strip()
+            or self.ids.db_dosimeter_search.text.strip()
+        )
+        try:
+            record = self.obter_database().get_dosimeter(dosimeter_id)
+            if record is None:
+                raise ValueError("Pesquise e selecione um dosímetro para excluir")
+        except (TypeError, ValueError, sqlite3.Error) as error:
+            self.dosimeter_message = str(error)
+            return
+
+        content = BoxLayout(orientation="vertical", spacing=10, padding=12)
+        content.add_widget(
+            Label(
+                text=(
+                    f"Excluir o dosímetro {dosimeter_id}?\n\n"
+                    "Todas as medições e históricos vinculados também serão "
+                    "excluídos permanentemente."
+                ),
+                text_size=(520, None),
+                halign="left",
+                valign="middle",
+            )
+        )
+        actions = BoxLayout(size_hint_y=None, height="42dp", spacing=8)
+        cancel = Button(text="Cancelar")
+        confirm = Button(text="Excluir definitivamente")
+        actions.add_widget(cancel)
+        actions.add_widget(confirm)
+        content.add_widget(actions)
+        popup = Popup(
+            title="Confirmar exclusão do dosímetro",
+            content=content,
+            size_hint=(0.70, 0.45),
+        )
+        cancel.bind(on_release=popup.dismiss)
+        confirm.bind(
+            on_release=lambda *_args: self._confirmar_exclusao_dosimetro(
+                popup,
+                dosimeter_id,
+            )
+        )
+        popup.open()
+
+    def _confirmar_exclusao_dosimetro(self, popup, dosimeter_id):
+        try:
+            deleted = self.obter_database().delete_dosimeter_with_history(
+                dosimeter_id
+            )
+        except (TypeError, ValueError, sqlite3.Error) as error:
+            self.dosimeter_message = f"Erro ao excluir: {error}"
+            return False
+        if popup is not None:
+            popup.dismiss()
+        self.novo_dosimetro()
+        self.ids.db_dosimeter_search.text = ""
+        self.pesquisar_dosimetros()
+        self.dosimeter_message = (
+            f"Dosímetro excluído • {deleted['measurements']} medições removidas"
+        )
+        return True
 
     def alternar_dosimetro(self):
         dosimeter_id = self.ids.db_dosimeter_id.text
@@ -1683,22 +1919,30 @@ class TelaBancoDados(Screen):
             "end_date": self.ids.db_reader_end.text or None,
             "active": self.ids.db_reader_active.active,
         }
+        saved_id = None
         try:
             if self._editing_reader_id is None:
                 self.obter_database().register_reader(reader_id, **values)
+                saved_id = reader_id.strip()
                 message = "Leitora cadastrada com sucesso"
             else:
-                if reader_id.strip() != self._editing_reader_id:
-                    raise ValueError("O ID da leitora não pode ser alterado")
-                if not self.obter_database().update_reader(reader_id, **values):
+                if not self.obter_database().update_reader(
+                    self._editing_reader_id,
+                    new_reader_id=reader_id,
+                    **values,
+                ):
                     raise ValueError("Leitora não encontrada")
+                saved_id = reader_id.strip()
+                self._editing_reader_id = saved_id
                 message = "Leitora atualizada com sucesso"
         except sqlite3.IntegrityError:
             message = "Leitora já cadastrada"
         except (TypeError, ValueError, sqlite3.Error) as error:
             message = str(error)
-        self.reader_message = message
+        if saved_id:
+            self.ids.db_reader_search.text = saved_id
         self.pesquisar_leitoras()
+        self.reader_message = message
         self._refresh_main_readers()
 
     def pesquisar_leitoras(self):
@@ -1719,11 +1963,33 @@ class TelaBancoDados(Screen):
             alignments=("left", "right", "center", "center", "center"),
             selection_callback=self.selecionar_leitora,
         )
+        search_text = self.ids.db_reader_search.text.strip()
+        if (
+            len(rows) == 1
+            and search_text
+            and rows[0]["reader_id"] == search_text
+        ):
+            self.selecionar_leitora(rows[0])
+
+    def carregar_leitora_por_id(self, reader_id=None):
+        reader_id = (reader_id or self.ids.db_reader_id.text).strip()
+        if not reader_id:
+            return False
+        try:
+            record = self.obter_database().get_reader(reader_id)
+        except (sqlite3.Error, RuntimeError, ValueError) as error:
+            self.reader_message = f"Erro ao carregar leitora: {error}"
+            return False
+        if record is None:
+            return False
+        self.ids.db_reader_search.text = reader_id
+        self.selecionar_leitora(record)
+        return True
 
     def selecionar_leitora(self, record):
         self._editing_reader_id = record["reader_id"]
         self.ids.db_reader_id.text = record["reader_id"]
-        self.ids.db_reader_id.disabled = True
+        self.ids.db_reader_id.disabled = False
         self.ids.db_reader_rcf.text = f"{record['rcf']:.10g}"
         self.ids.db_reader_begin.text = self._date_for_display(
             record["begin_date"]
@@ -1733,6 +1999,77 @@ class TelaBancoDados(Screen):
         )
         self.ids.db_reader_active.active = bool(record["active"])
         self.reader_message = "Leitora selecionada para edição"
+
+    def excluir_leitora(self):
+        if self._leitura_em_andamento():
+            self.reader_message = (
+                "Finalize a leitura atual antes de excluir uma leitora."
+            )
+            return
+        reader_id = (
+            self._editing_reader_id
+            or self.ids.db_reader_id.text.strip()
+            or self.ids.db_reader_search.text.strip()
+        )
+        try:
+            record = self.obter_database().get_reader(reader_id)
+            if record is None:
+                raise ValueError("Pesquise e selecione uma leitora para excluir")
+        except (TypeError, ValueError, sqlite3.Error) as error:
+            self.reader_message = str(error)
+            return
+
+        content = BoxLayout(orientation="vertical", spacing=10, padding=12)
+        content.add_widget(
+            Label(
+                text=(
+                    f"Excluir a leitora {reader_id}?\n\n"
+                    "Todas as medições e históricos vinculados também serão "
+                    "excluídos permanentemente."
+                ),
+                text_size=(520, None),
+                halign="left",
+                valign="middle",
+            )
+        )
+        actions = BoxLayout(size_hint_y=None, height="42dp", spacing=8)
+        cancel = Button(text="Cancelar")
+        confirm = Button(text="Excluir definitivamente")
+        actions.add_widget(cancel)
+        actions.add_widget(confirm)
+        content.add_widget(actions)
+        popup = Popup(
+            title="Confirmar exclusão da leitora",
+            content=content,
+            size_hint=(0.70, 0.45),
+        )
+        cancel.bind(on_release=popup.dismiss)
+        confirm.bind(
+            on_release=lambda *_args: self._confirmar_exclusao_leitora(
+                popup,
+                reader_id,
+            )
+        )
+        popup.open()
+
+    def _confirmar_exclusao_leitora(self, popup, reader_id):
+        try:
+            deleted = self.obter_database().delete_reader_with_measurements(
+                reader_id
+            )
+        except (TypeError, ValueError, sqlite3.Error) as error:
+            self.reader_message = f"Erro ao excluir: {error}"
+            return False
+        if popup is not None:
+            popup.dismiss()
+        self.nova_leitora()
+        self.ids.db_reader_search.text = ""
+        self.pesquisar_leitoras()
+        self._refresh_main_readers()
+        self.reader_message = (
+            f"Leitora excluída • {deleted['measurements']} medições removidas"
+        )
+        return True
 
     def alternar_leitora(self):
         reader_id = self.ids.db_reader_id.text
@@ -1753,7 +2090,11 @@ class TelaBancoDados(Screen):
 
     @staticmethod
     def _montar_dataframe_dosimetros(rows):
-        columns = ["Dosímetro", "ECC", "Data inicial", "Data final", "Status"]
+        columns = [
+            "Dosímetro", "ECC Hp(10)", "ECC Hp(0,07)",
+            "BC Hp(10)", "BC Hp(0,07)",
+            "Data inicial", "Data final", "Status",
+        ]
         if not rows:
             return pd.DataFrame(columns=columns)
         frame = pd.DataFrame.from_records(rows).sort_values(
@@ -1762,7 +2103,16 @@ class TelaBancoDados(Screen):
         )
         records = [rows[index] for index in frame.index]
         frame["Dosímetro"] = frame["dosimeter_id"].astype("string")
-        frame["ECC"] = pd.to_numeric(frame["ecc"]).map(
+        frame["ECC Hp(10)"] = pd.to_numeric(frame["ecc_hp10"]).map(
+            lambda value: f"{value:.10g}"
+        )
+        frame["ECC Hp(0,07)"] = pd.to_numeric(frame["ecc_hp007"]).map(
+            lambda value: f"{value:.10g}"
+        )
+        frame["BC Hp(10)"] = pd.to_numeric(frame["bc_hp10"]).map(
+            lambda value: f"{value:.10g}"
+        )
+        frame["BC Hp(0,07)"] = pd.to_numeric(frame["bc_hp007"]).map(
             lambda value: f"{value:.10g}"
         )
         frame["Data inicial"] = pd.to_datetime(
@@ -1812,6 +2162,7 @@ class TelaBancoDados(Screen):
             "Dosímetro",
             "Leitora",
             "Modo",
+            "Grandeza",
             "Dose (mSv)",
             "Status",
         ]
@@ -1832,6 +2183,9 @@ class TelaBancoDados(Screen):
         frame["Dosímetro"] = frame["dosimeter_id"].fillna("—").astype("string")
         frame["Leitora"] = frame["reader_id"].fillna("—").astype("string")
         frame["Modo"] = frame["test_mode"].astype("string")
+        frame["Grandeza"] = frame["dose_channel"].map(
+            {"HP10": "Hp(10)", "HP007": "Hp(0,07)"}
+        ).fillna("—")
         frame["Dose (mSv)"] = pd.to_numeric(frame["dose_msv"]).map(
             lambda value: f"{value:.3f}"
         )
@@ -1845,10 +2199,13 @@ class TelaBancoDados(Screen):
         rows,
         *,
         time_column,
-        dose_column,
+        hp10_column,
+        hp007_column,
         status_column,
     ):
-        columns = ["Data/hora", "Dosímetro", "Dose (mSv)", "Status"]
+        columns = [
+            "Data/hora", "Dosímetro", "Hp(10) mSv", "Hp(0,07) mSv", "Status"
+        ]
         if not rows:
             return pd.DataFrame(columns=columns)
 
@@ -1860,8 +2217,14 @@ class TelaBancoDados(Screen):
         )
         frame["Dosímetro"] = frame["dosimeter_id"].astype("string")
 
-        dose = pd.to_numeric(frame[dose_column], errors="coerce").fillna(0.0)
-        frame["Dose (mSv)"] = dose.map(lambda value: f"{value:.3f}")
+        hp10 = pd.to_numeric(frame[hp10_column], errors="coerce")
+        hp007 = pd.to_numeric(frame[hp007_column], errors="coerce")
+        frame["Hp(10) mSv"] = hp10.map(
+            lambda value: "—" if pd.isna(value) else f"{value:.3f}"
+        )
+        frame["Hp(0,07) mSv"] = hp007.map(
+            lambda value: "—" if pd.isna(value) else f"{value:.3f}"
+        )
         frame["Status"] = frame[status_column].astype("string")
         frame = frame.sort_values(time_column, ascending=False, kind="stable")
         return frame.loc[:, columns].reset_index(drop=True)
@@ -1930,10 +2293,16 @@ class TelaBancoDados(Screen):
         dataframe = self._montar_dataframe_historico(
             self._personal_dose_rows,
             time_column="time_dos",
-            dose_column="dose_dos",
+            hp10_column="hp10_dos",
+            hp007_column="hp007_dos",
             status_column="status_dos",
         )
-        self._renderizar_dataframe(container, dataframe)
+        self._renderizar_dataframe(
+            container,
+            dataframe,
+            widths=(0.25, 0.20, 0.17, 0.17, 0.21),
+            alignments=("left", "center", "right", "right", "center"),
+        )
         self.personal_dose_message = "Pesquisa concluída"
 
     def pesquisar_backgrounds(self):
@@ -1951,10 +2320,16 @@ class TelaBancoDados(Screen):
         dataframe = self._montar_dataframe_historico(
             self._background_rows,
             time_column="time_bg",
-            dose_column="dose_bg",
+            hp10_column="hp10_bg",
+            hp007_column="hp007_bg",
             status_column="status_bg",
         )
-        self._renderizar_dataframe(container, dataframe)
+        self._renderizar_dataframe(
+            container,
+            dataframe,
+            widths=(0.25, 0.20, 0.17, 0.17, 0.21),
+            alignments=("left", "center", "right", "right", "center"),
+        )
         self.background_message = "Pesquisa concluída"
 
     def exportar_csv_doses_pessoais(self):
@@ -2010,9 +2385,10 @@ class TelaBancoDados(Screen):
         self._renderizar_dataframe(
             container,
             dataframe,
-            widths=(0.23, 0.16, 0.14, 0.16, 0.13, 0.18),
+            widths=(0.20, 0.14, 0.12, 0.13, 0.11, 0.12, 0.18),
             alignments=(
                 "left",
+                "center",
                 "center",
                 "center",
                 "center",
@@ -2026,6 +2402,8 @@ class TelaBancoDados(Screen):
     def mostrar_medicao(self, record):
         self.history_details = (
             f"ID {record['id']} • {record['file_name'] or 'sem arquivo'}\n"
+            f"Grandeza: {self._channel_for_display(record.get('dose_channel'))}"
+            f"   Sessão: {record.get('test_session_id') or '—'}\n"
             f"Count: {record['count_01s']}   Current: {record['current_ma']:.10g}"
             f"   Light: {record['light_mv']:.10g}"
             f"   Dose: {record['dose_msv']:.10g}\n"
@@ -2037,6 +2415,10 @@ class TelaBancoDados(Screen):
             f"Caminho: {record['file_path'] or '—'}\n"
             f"Observação: {record['notes'] or '—'}"
         )
+
+    @staticmethod
+    def _channel_for_display(channel):
+        return {"HP10": "Hp(10)", "HP007": "Hp(0,07)"}.get(channel, "—")
 
     def exportar_csv_historico(self):
         try:

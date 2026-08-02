@@ -1,32 +1,32 @@
 # OSLMeter V4.0
 
 Aplicação desktop em **Python + Kivy** para controlar uma leitora OSL
-(*Optically Stimulated Luminescence*) pela porta serial, acompanhar os valores
-em tempo real, calcular a dose, salvar o arquivo técnico da aquisição e manter
-um histórico auditável em **SQLite**.
+(*Optically Stimulated Luminescence*) pela porta serial, calcular doses e
+manter um histórico auditável em **SQLite**.
 
-O programa trabalha em dois modos:
+O sistema trabalha em dois modos:
 
-- **Manual**: o operador informa ECC, RCF, Fang, Fenerg, Base Line e o nome do
-  arquivo.
-- **Dosímetro ID**: o código de barras identifica um dosímetro cadastrado; ECC
-  e RCF são carregados do banco e o nome do arquivo é gerado automaticamente.
+- **Manual**: o operador informa ECC, RCF, Fang, Fenerg, Linha de Base e o nome
+  do arquivo.
+- **Dosímetro ID**: o dosímetro e a leitora são consultados no banco. Cada
+  teste reúne uma aquisição de **Hp(10)** e outra de **Hp(0,07)**.
 
 ## Funcionalidades
 
-- Conexão serial a `115200 baud`, seleção e atualização das portas disponíveis.
-- Comandos de leitura, Stop, Erase, Ref Light e configuração da leitora.
-- Modos de teste **Manual** e **Dosímetro ID**.
-- Captura de código de barras com 10 dígitos e Enter final.
-- Cadastro e manutenção de dosímetros e leitoras.
+- Comunicação serial a `115200 baud`.
+- Start, Stop, Erase, Ref Light e configuração da leitora.
+- Leitura de código de barras de 10 dígitos.
+- Grandezas Hp(10) e Hp(0,07), com ECC e BC próprios para cada uma.
+- RCF carregado do cadastro da leitora.
+- Integral da Área e Linha de Base consolidados após as duas grandezas.
+- Cadastro, pesquisa, edição, ativação e exclusão de dosímetros e leitoras.
+- Preenchimento automático dos formulários ao informar um ID existente.
 - Validação de estado ativo e período de validade antes da aquisição.
-- Cálculo de dose com os parâmetros efetivamente aplicados.
-- Histórico SQLite com snapshots de ECC, RCF, Fang, Fenerg e Base Line.
-- Arquivos `.txt` separados por ano, mês e dia.
-- Gráfico em tempo real e tela para abrir logs antigos.
-- Exportação do histórico filtrado para CSV.
-- Backup consistente do banco pela API de backup do SQLite.
-- Simulador de leitora para desenvolvimento sem o equipamento físico.
+- Histórico detalhado das aquisições e dos parâmetros realmente aplicados.
+- Exportação CSV, backup e importação segura do banco SQLite.
+- Arquivos técnicos `.txt` separados por ano, mês e dia.
+- Gráfico em tempo real e visualização de logs antigos.
+- Simulador para desenvolvimento sem o equipamento físico.
 - Empacotamento para Windows com PyInstaller.
 
 ## Requisitos
@@ -35,11 +35,11 @@ O programa trabalha em dois modos:
 - Kivy 2.3.1.
 - pyserial 3.5.
 - matplotlib 3.9.2.
-- pandas 3.0.5, usado para organizar tabelas, filtros, formatação de dados e exportações.
+- pandas 3.0.5.
 
 O módulo `sqlite3` já faz parte da biblioteca padrão do Python.
 
-## Instalação
+## Instalação e execução
 
 No PowerShell:
 
@@ -50,6 +50,7 @@ cd Interface_Leitora\Interface_Leitora
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
 pip install -r requirements.txt
+python interface_OSL.py
 ```
 
 No Linux ou macOS, ative o ambiente com:
@@ -58,299 +59,279 @@ No Linux ou macOS, ative o ambiente com:
 source .venv/bin/activate
 ```
 
-## Como executar
+## Modos de leitura
 
-A partir da pasta que contém `interface_OSL.py`:
+### Manual
 
-```powershell
-python interface_OSL.py
-```
-
-Os caminhos de `interface_OSL.kv` e `assets` são resolvidos com base na pasta
-do código ou do executável empacotado. A janela abre maximizada e possui tamanho
-mínimo de `900 × 650` para evitar sobreposição dos formulários.
-
-## Visão geral da interface
-
-A barra lateral esquerda contém as áreas principais:
-
-1. **Leitura OSL**: conexão, modos de teste, aquisição e monitoramento.
-2. **Banco de dados**: dosímetros, leitoras, histórico, CSV e backup.
-3. **Gráficos**: abertura e plotagem de arquivos `.txt`.
-4. **Setup**: parâmetros enviados ao firmware da leitora.
-
-### Conexão serial
-
-Na parte superior da tela de leitura:
-
-1. Clique em **Refresh** para atualizar as portas.
-2. Selecione a porta COM.
-3. Clique em **Connect**.
-4. O botão muda para **Disconnect** quando a conexão é aberta.
-
-A aplicação registra uma cópia da comunicação serial em:
-
-```text
-assets/log/serial_AAAAMMDD_HHMMSS_microssegundos.txt
-```
-
-Cada linha contém horário, direção (`TX`, `RX` ou sistema) e conteúdo do
-evento. Esse log serve para diagnóstico e não substitui o arquivo da medição.
-
-## Modo Manual
-
-Selecione a aba **Manual**. Os seguintes campos ficam visíveis e editáveis:
+O operador informa:
 
 | Campo | Função |
 |---|---|
-| `ECC` | fator individual do dosímetro usado no cálculo |
-| `RCF` | fator da leitora usado no cálculo |
+| `ECC` | fator individual do dosímetro |
+| `RCF` | fator da leitora |
 | `Fang` | fator angular |
 | `Fenerg` | fator de energia |
 | `Base Line` | valor subtraído da soma |
 | `File Name` | nome do arquivo `.txt` |
 
-Antes do Start, ECC, RCF, Fang e Fenerg devem ser números maiores que zero.
-Base Line deve ser numérica e não negativa. O nome do arquivo não aceita
-caminho absoluto, `..` nem caracteres inválidos do Windows.
+ECC, RCF, Fang e Fenerg devem ser maiores que zero. A Linha de Base deve ser
+numérica e não negativa.
 
-Fluxo:
+### Dosímetro ID
 
-1. Preencha os parâmetros.
-2. Informe o nome do arquivo.
-3. Conecte a serial.
-4. Clique em **Start**.
-5. A aplicação cria uma medição `EM_ANDAMENTO`, cria o `.txt` sem sobrescrever
-   um arquivo existente e envia o comando de leitura.
-6. Ao final, grava os valores e altera o status para `CONCLUIDO`.
+O operador seleciona uma leitora e informa ou lê o código de barras do
+dosímetro. O sistema valida automaticamente:
 
-No modo Manual, o histórico usa `test_mode = MANUAL` e não exige dosímetro nem
-leitora cadastrados.
+- ID com exatamente 10 dígitos;
+- dosímetro cadastrado, ativo e dentro da validade;
+- leitora cadastrada, ativa e dentro da validade;
+- ECC da grandeza selecionada maior que zero;
+- RCF da leitora maior que zero.
 
-## Modo Dosímetro ID
+Os parâmetros vêm destes cadastros:
 
-Selecione a aba **Dosímetro ID**. O painel manual é ocultado e são mostrados:
+| Grandeza | ECC aplicado | Linha de Base aplicada | RCF aplicado |
+|---|---|---|---|
+| Hp(10) | `dosimeters.ecc_hp10` | `dosimeters.bc_hp10` | `readers.rcf` |
+| Hp(0,07) | `dosimeters.ecc_hp007` | `dosimeters.bc_hp007` | `readers.rcf` |
 
-- campo `Dosímetro ID`;
-- seletor de leitora;
-- status de validação;
-- ECC e RCF encontrados;
-- nome automático do arquivo.
+Ao trocar a grandeza, a interface carrega a constante correspondente do banco.
+ECC, BC e RCF utilizados também são copiados para a medição, preservando o
+histórico mesmo que o cadastro seja alterado posteriormente.
 
-### Leitor de código de barras
+### Sessão Hp(10) + Hp(0,07)
 
-O leitor funciona como teclado. Ao abrir a aba:
+Cada teste de dosímetro possui um `test_session_id` e só termina quando as duas
+grandezas forem concluídas:
 
-1. O campo recebe foco automaticamente.
-2. O leitor envia os 10 dígitos.
-3. O Enter final executa a consulta. Se o ID completo e a leitora já estiverem
-   preenchidos, a consulta também é feita automaticamente.
-4. Espaços e caracteres de controle do scanner são removidos, sem alterar os
-   dígitos.
-5. A consulta não inicia a aquisição; o operador ainda confirma em **Start**.
+1. O operador escolhe Hp(10) ou Hp(0,07) e inicia a aquisição.
+2. Durante a aquisição, a interface mostra `Lendo Hp(10)...` ou
+   `Lendo Hp(0,07)...`.
+3. O botão da grandeza só comuta depois do término real da leitura.
+4. Stop, erro ou interrupção não concluem a grandeza; o operador deve repeti-la.
+5. Depois das duas aquisições concluídas, o banco cria um único registro
+   consolidado para a sessão.
 
-O Start só é habilitado quando:
-
-- o ID contém exatamente 10 dígitos ASCII;
-- o dosímetro existe, está ativo e dentro da validade;
-- o ECC do dosímetro é maior que zero;
-- uma leitora foi selecionada;
-- a leitora existe, está ativa e dentro da validade;
-- o RCF da leitora é maior que zero.
-
-Nesse modo, ECC vem do dosímetro e RCF vem da leitora. Fang, Fenerg e Base Line
-continuam usando a configuração atual dos campos manuais, mesmo quando esse
-painel está oculto. ECC e RCF carregados não são editáveis.
-
-O nome sugerido segue:
+O nome automático contém tipo, grandeza, data, hora e microssegundos:
 
 ```text
-<dosimeter_id>_<AAAA-MM-DD_HH-mm-ss>.txt
+<dosimetro>_<integral-ou-linha-base>_<hp10-ou-hp007>_<data_hora>.txt
 ```
 
-Depois de uma conclusão, interrupção ou erro, o campo é preparado novamente
-para o próximo código.
+## Integral da Área e Linha de Base
 
-## Aquisição, Stop, Erase e Ref Light
+Uma sessão normal é registrada em `historico_dose` como **Integral da Área**.
 
-- **Start** valida o modo, cria o histórico e inicia a aquisição.
-- **Stop** envia o comando de parada, fecha o arquivo e marca a medição como
-  `INTERROMPIDO`.
-- **Erase** envia o comando de zeramento.
-- **Ref Light** mede o integral de luz e mostra esse resultado no cartão de
-  dose, preservando o fluxo já existente da leitora.
+Para registrar em `historico_branco` como **Linha de Base**, o operador precisa
+executar **Erase** antes de iniciar a primeira leitura da sessão. O zeramento
+classifica o par Hp(10)/Hp(0,07) como `BACKGROUND`. Depois que ambas terminam,
+o fluxo volta ao tipo normal `PERSONAL_DOSE`.
 
-Falhas de transmissão, recepção ou finalização marcam a medição como `ERRO`
-quando já existe um registro em andamento.
+Executar Stop não transforma uma sessão em Linha de Base e não comuta a
+grandeza; apenas marca a aquisição como interrompida.
 
 ## Cálculo da dose
 
-A fórmula preservada pelo projeto é:
+A fórmula é:
 
 ```text
-Dose = (Soma - Base Line) × RCF × ECC × Fang × Fenerg
+Dose = max(0, (Soma - Linha de Base) × RCF × ECC × Fang × Fenerg)
 ```
 
-No modo Manual, todos os coeficientes vêm dos campos. No modo Dosímetro ID, ECC
-e RCF vêm do banco. O resultado e uma cópia de todos os coeficientes são salvos
-na medição; editar um cadastro depois não altera o histórico antigo.
+No modo Manual, os fatores vêm dos campos da interface. No modo Dosímetro ID,
+ECC e Linha de Base vêm do canal selecionado no cadastro do dosímetro, e RCF
+vem da leitora. A medição armazena snapshots de todos esses parâmetros.
 
-## Painel de acompanhamento
-
-A parte inferior da tela principal possui três abas:
-
-- **Acquisition**: mostra Count, Current, Light e Dose.
-- **Graphics**: gráfico em tempo real com seleção das séries Count, Current e
-  Light.
-- **Serial Monitor**: apresenta o estado da conexão e o último frame recebido.
-
-Os frames principais processados são:
-
-| Frame | Valor |
-|---|---|
-| `#L1%A` | Count |
-| `#L1%E` | Current |
-| `#L1%D` | Light e fechamento da amostra |
-
-## Tela Setup
-
-A tela **Setup** configura os parâmetros enviados ao firmware:
-
-- modo;
-- ganho;
-- tempo de leitura;
-- potência;
-- tempo de zeramento;
-- potência de zeramento.
-
-Campos de um dígito e tempos de até cinco dígitos são validados antes de montar
-o comando serial.
-
-## Banco de dados
+## Banco de dados SQLite
 
 O banco é criado automaticamente em:
 
 ```text
-assets/database/measurements.sqlite3
+Interface_Leitora/assets/database/measurements.sqlite3
 ```
 
-As conexões habilitam:
+O esquema atual é a **versão 6**. A inicialização executa migrações compatíveis
+com bancos anteriores e registra a versão em `PRAGMA user_version` e
+`schema_versions`.
+
+Cada conexão usa:
 
 - `PRAGMA foreign_keys = ON`;
 - `PRAGMA journal_mode = WAL`;
-- `PRAGMA busy_timeout = 10000`.
+- `PRAGMA busy_timeout = 10000`;
+- commit ao concluir a operação;
+- rollback automático quando ocorre uma exceção.
 
-O esquema é versionado com `PRAGMA user_version` e a tabela
-`schema_versions`.
+### Estrutura das tabelas
 
-### Tabela `dosimeters`
+#### `dosimeters`
 
 | Coluna | Conteúdo |
 |---|---|
-| `dosimeter_id` | texto com exatamente 10 dígitos |
-| `ecc` | fator maior que zero |
-| `begin_date` | início da validade |
-| `end_date` | fim opcional da validade; vazio significa sem data final |
+| `dosimeter_id` | chave primária textual com exatamente 10 dígitos |
+| `ecc_hp10` | ECC de Hp(10) |
+| `ecc_hp007` | ECC de Hp(0,07) |
+| `bc_hp10` | BC/Linha de Base de Hp(10) |
+| `bc_hp007` | BC/Linha de Base de Hp(0,07) |
+| `begin_date`, `end_date` | período de validade; data final opcional |
 | `active` | `1` ativo ou `0` inativo |
 | `created_at`, `updated_at` | auditoria em UTC |
 
-### Tabela `readers`
+#### `readers`
 
 | Coluna | Conteúdo |
 |---|---|
-| `reader_id` | identificação textual única |
-| `rcf` | fator maior que zero |
-| `begin_date` | início da validade |
-| `end_date` | fim opcional da validade |
+| `reader_id` | chave primária textual da leitora |
+| `rcf` | constante RCF maior que zero |
+| `begin_date`, `end_date` | período de validade; data final opcional |
 | `active` | `1` ativa ou `0` inativa |
 | `created_at`, `updated_at` | auditoria em UTC |
 
-### Tabela `measurements`
+#### `measurements`
 
-Cada linha representa uma aquisição e contém:
+Cada linha representa uma aquisição individual. Uma sessão completa de
+dosímetro normalmente gera duas linhas, uma para cada canal.
 
-- data/hora UTC;
-- modo Manual ou Dosímetro ID;
-- leitora e dosímetro quando aplicáveis;
-- nome e caminho do arquivo;
-- Count, Current, Light e Dose;
-- snapshots de ECC, RCF, Fang, Fenerg e Base Line;
-- status e observação;
-- datas de criação e atualização.
+Entre os dados gravados estão:
 
-Os status possíveis são `EM_ANDAMENTO`, `CONCLUIDO`, `INTERROMPIDO` e `ERRO`.
-Chaves estrangeiras impedem apagar cadastros usados no histórico; a interface
-usa ativação e desativação.
+- `test_mode`: `MANUAL` ou `DOSIMETER_ID`;
+- `reading_type`: `PERSONAL_DOSE` ou `BACKGROUND`;
+- `dose_channel`: `HP10` ou `HP007`;
+- `test_session_id`: vínculo entre as duas grandezas;
+- leitora, dosímetro, data/hora e arquivo;
+- Count, Current, Light, sinal bruto e dose;
+- ECC, RCF, Fang, Fenerg e Linha de Base aplicados;
+- status `EM_ANDAMENTO`, `CONCLUIDO`, `INTERROMPIDO` ou `ERRO`;
+- observações e datas de auditoria.
 
-## Cadastros na tela Banco de dados
+#### `historico_dose`
 
-### Aba Dosímetros
+Guarda o resultado consolidado da sessão de Integral da Área. O registro só é
+criado quando existem aquisições `CONCLUIDO` para HP10 e HP007 na mesma sessão.
+Mantém os dois valores, os IDs das duas medições e o status `Need to Erase`.
 
-- **Novo** limpa o formulário.
-- **Salvar** cadastra ou atualiza o item selecionado.
-- **Ativar/Desativar** muda a disponibilidade sem apagar o histórico.
-- **Pesquisar** filtra pelo ID.
-- Clicar em um resultado carrega o registro para edição.
+#### `historico_branco`
 
-Datas podem ser digitadas como `dd/mm/aaaa`. A data final é opcional para
-dosímetros e leitoras; quando vazia, a validade permanece aberta.
+Guarda o resultado consolidado da sessão iniciada após Erase. Também exige as
+duas grandezas concluídas e usa o status `Ready to Use`.
 
-### Aba Leitoras
+### Integridade e relacionamentos
 
-O fluxo é equivalente ao de dosímetros. `End Date` pode ficar vazio, o que
-representa validade sem data final.
+- IDs são armazenados como texto, preservando zeros à esquerda.
+- Datas de persistência são normalizadas para ISO 8601/UTC.
+- SQL usa parâmetros, sem interpolar valores fornecidos pelo operador.
+- Alterar o ID de dosímetro ou leitora atualiza as referências com
+  `ON UPDATE CASCADE`.
+- A exclusão pela interface pede confirmação e remove, em uma transação, os
+  históricos e medições vinculados antes do cadastro.
+- Exclusões são bloqueadas enquanto houver uma leitura em andamento.
 
-### Aba Histórico
+## Integração do banco com os arquivos Python
 
-É possível filtrar por:
+### `database.py`
 
-- Dosímetro ID;
-- leitora;
-- modo de teste;
-- data inicial;
-- data final.
+É a camada de persistência. Ela concentra:
 
-Ao clicar em uma medição, a tela mostra os quatro valores, os cinco parâmetros
-aplicados, caminho do arquivo e observação.
+- criação e migração do esquema;
+- normalização e validação de IDs, datas e números;
+- CRUD de dosímetros e leitoras;
+- início e atualização das medições;
+- consolidação de Hp(10)/Hp(0,07) por `sync_measurement_history()`;
+- consultas, filtros e exportação CSV;
+- backup, validação e importação do SQLite.
 
-## Exportação CSV
+A interface não executa SQL diretamente. Ela chama os métodos da classe
+`Database`.
 
-O botão **Exportar CSV** exporta exatamente os resultados do filtro atual para:
+### `interface_OSL.py`
 
-```text
-assets/exports/measurements_<data_hora>.csv
+Na inicialização, `AplicativoInterfaceOSL.build()` cria uma única instância de
+`Database` e a injeta nas telas principal e de banco de dados:
+
+```python
+self.database = Database()
+root.get_screen("main").database = self.database
+root.get_screen("banco_dados").database = self.database
 ```
 
-O arquivo usa `UTF-8 com BOM`, compatível com a abertura direta no Excel, e
-inclui os dados da medição e os parâmetros aplicados.
+O fluxo de aquisição é:
 
-## Backup SQLite
+1. Consulta e valida dosímetro e leitora no banco.
+2. Carrega ECC/BC do canal e RCF da leitora.
+3. Cria a medição com status `EM_ANDAMENTO`.
+4. Recebe os frames da serial e calcula a dose.
+5. Atualiza a medição como `CONCLUIDO`, `INTERROMPIDO` ou `ERRO`.
+6. Chama `sync_measurement_history()` após uma conclusão.
+7. O histórico consolidado aparece somente quando a sessão possui HP10 e HP007.
 
-O botão **Exportar backup do banco** abre um seletor de destino iniciado em:
+A tela Banco de dados usa a mesma instância para cadastrar, pesquisar, editar,
+ativar, desativar e excluir registros.
 
-```text
-assets/backups
+### `measurement_workflow.py`
+
+Contém regras independentes da interface:
+
+- limpeza do texto recebido pelo leitor de código de barras;
+- validação e criação segura dos nomes de arquivo;
+- conversão de números com ponto ou vírgula decimal;
+- fórmula de cálculo da dose.
+
+### `interface_OSL.kv`
+
+Define os campos, botões e estados visuais. Os eventos de Enter, perda de foco,
+Salvar, Excluir e seleção de grandeza chamam os métodos de `interface_OSL.py`,
+que por sua vez acessam `Database`.
+
+```mermaid
+flowchart LR
+    UI["interface_OSL.kv"] --> APP["interface_OSL.py"]
+    APP --> RULES["measurement_workflow.py"]
+    APP --> DB["database.py"]
+    DB --> SQLITE["measurements.sqlite3"]
+    SERIAL["Leitora serial"] --> APP
+    APP --> LOGS["assets/testes/AAAA/MM/DD"]
 ```
 
-O nome sugerido é:
+## Cadastros na interface
 
-```text
-measurements_backup_<AAAA-MM-DD_HH-mm-ss>.sqlite3
-```
+### Dosímetros
 
-O backup usa `sqlite3.Connection.backup()`, adequado ao modo WAL, e executa
-`PRAGMA integrity_check` antes de confirmar o arquivo. Um destino existente não
-é sobrescrito silenciosamente.
+- Informar um ID existente e pressionar Enter ou sair do campo preenche ECC
+  Hp(10), ECC Hp(0,07), BC Hp(10), BC Hp(0,07), datas e status.
+- **Salvar** cadastra ou atualiza todos os campos, inclusive o ID.
+- **Ativar/Desativar** controla a disponibilidade para novas leituras.
+- **Excluir** pede confirmação e remove os dados vinculados.
+
+### Leitoras
+
+- Informar um Reader existente e pressionar Enter ou sair do campo preenche
+  RCF, datas e status.
+- **Salvar** cadastra ou atualiza todos os campos, inclusive o Reader.
+- **Ativar/Desativar** controla a disponibilidade.
+- **Excluir** pede confirmação e remove medições e históricos vinculados.
+
+As datas são digitadas manualmente. A interface não insere barras
+automaticamente; aceita `dd/mm/aaaa`, e a data final é opcional.
+
+## CSV, backup e importação
+
+- Integral da Área, Linha de Base e medições podem ser exportados em CSV
+  `UTF-8 com BOM`.
+- O backup usa `sqlite3.Connection.backup()` e valida o resultado com
+  `PRAGMA integrity_check`.
+- A importação valida tabelas, integridade e chaves estrangeiras, migra o
+  esquema quando necessário e cria um backup automático antes da substituição.
+- Se a importação falhar, o banco anterior é restaurado.
 
 ## Arquivos de medição
 
-Os `.txt` são gravados em:
+Os arquivos são gravados em:
 
 ```text
-assets/testes/AAAA/MM/DD/<nome>.txt
+Interface_Leitora/assets/testes/AAAA/MM/DD/<nome>.txt
 ```
 
-Formato:
+Formato básico:
 
 ```text
 30/07/2026 15:30:00
@@ -359,36 +340,20 @@ Soma: 3469
 Dose: 0.114
 Time;Count;Current;Light
 0.1;1733;45;471
-0.2;1736;45;470
 ```
 
-O arquivo é criado com modo exclusivo. Se já existir, a aquisição não o
-sobrescreve e o operador recebe uma mensagem de erro.
-
-## Tela Gráficos
-
-1. Abra a área **Gráficos** na barra lateral.
-2. Navegue pela árvore de `assets/testes`.
-3. Opcionalmente filtre por data.
-4. Selecione um `.txt`.
-5. Marque Count, Current e/ou Light.
-6. Clique em **Gerar gráfico**.
-7. Use **Exportar CSV** para converter o log selecionado.
-
-O parser suporta o formato atual separado por `;` e formatos históricos. Linhas
-parciais com quantidade divergente de colunas são ignoradas.
+O arquivo é criado em modo exclusivo e nunca sobrescreve silenciosamente um
+arquivo existente.
 
 ## Simulador sem hardware
 
-O simulador usa a porta `COM6`. Com um par virtual `COM5 ↔ COM6`:
+O simulador usa por padrão a porta `COM6`. Com um par virtual `COM5 ↔ COM6`:
 
 1. Execute `simulacao\rodar_simulador.bat`.
-2. Abra a interface.
-3. Selecione `COM5`.
-4. Clique em **Connect** e depois em **Start**.
+2. Abra a interface e selecione `COM5`.
+3. Clique em **Connect** e depois em **Start**.
 
-Para outro par de portas, altere `PORTA_SERIAL` no início de
-`simulacao/simulador_osl.py`.
+Para outro par, altere `PORTA_SERIAL` em `simulacao/simulador_osl.py`.
 
 ## Estrutura do projeto
 
@@ -402,18 +367,9 @@ Interface_Leitora/
 ├── OSLMeter.spec
 ├── requirements.txt
 ├── conversor/
-│   ├── __init__.py
-│   └── log_parser.py
 ├── simulacao/
-│   ├── simulador_osl.py
-│   ├── rodar_simulador.bat
-│   └── README.md
 ├── tests/
-│   ├── test_database.py
-│   ├── test_interface_modes.py
-│   └── test_measurement_workflow.py
 └── assets/
-    ├── UI/
     ├── database/
     ├── backups/
     ├── exports/
@@ -421,52 +377,26 @@ Interface_Leitora/
     └── testes/AAAA/MM/DD/
 ```
 
-Responsabilidades:
-
-- `interface_OSL.py`: telas, serial, fluxo da aquisição e integração.
-- `interface_OSL.kv`: layout e estados visuais.
-- `database.py`: esquema, validações, CRUD, histórico, CSV e backup.
-- `measurement_workflow.py`: nome seguro, texto do scanner e fórmula da dose.
-- `Plot_grafico.py`: geração do gráfico.
-- `conversor/log_parser.py`: leitura do `.txt` e conversão para CSV.
-
 ## Testes
 
-Os testes usam diretórios temporários e não escrevem no banco real:
+Os testes usam bancos e diretórios temporários, sem alterar o banco real:
 
 ```powershell
 cd Interface_Leitora
 python -m unittest discover -s tests -v
 ```
 
-Eles cobrem esquema idempotente, rollback, CRUD, validade, snapshots,
-persistência, filtros, CSV, backup, segurança do nome do arquivo, troca visual
-dos modos, foco do código de barras, consulta por Enter, aquisição serial
-simulada e interrupção por Stop.
+A suíte cobre migração e integridade do esquema, CRUD, renomeação em cascata,
+exclusão com dados vinculados, validade, snapshots dos parâmetros, sessões de
+duas grandezas, Linha de Base após Erase, Stop, CSV, backup, importação e fluxo
+visual da interface.
 
 ## Empacotamento
 
-Com PyInstaller instalado:
-
 ```powershell
+cd Interface_Leitora
 pyinstaller OSLMeter.spec
 ```
 
-O arquivo `.spec` inclui `interface_OSL.kv` e `assets`. Os módulos Python
-importados são detectados durante a análise. No executável, os caminhos são
-resolvidos a partir de `sys._MEIPASS`.
-
-## Solução de problemas
-
-- **Start desabilitado no modo Dosímetro ID**: confira se o ID tem 10 dígitos,
-  a leitora foi selecionada e ambos os cadastros estão ativos e dentro da
-  validade. O Enter pode ser usado para validar o código, mas não é obrigatório
-  quando os campos já estão preenchidos.
-- **Arquivo já existe**: informe outro nome no modo Manual ou aguarde um novo
-  segundo para gerar outro nome automático.
-- **Nenhuma porta serial encontrada**: conecte o equipamento ou crie o par de
-  portas virtuais e clique em Refresh.
-- **Banco ocupado**: a aplicação espera até 10 segundos; verifique se outra
-  instância está escrevendo no mesmo arquivo.
-- **Layout sobreposto**: reinicie a versão atual; a janela tem tamanho mínimo
-  de `900 × 650` e as telas acompanham explicitamente o `ScreenManager`.
+O arquivo `.spec` inclui o layout Kivy e os assets necessários. No executável,
+os caminhos são resolvidos a partir de `sys._MEIPASS`.
