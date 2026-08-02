@@ -4,6 +4,9 @@ Aplicação desktop em **Python + Kivy** para controlar uma leitora OSL
 (*Optically Stimulated Luminescence*) pela porta serial, calcular doses e
 manter um histórico auditável em **SQLite**.
 
+Para instalar e iniciar a aplicação do zero, consulte
+[`COMO_RODAR.md`](COMO_RODAR.md).
+
 O sistema trabalha em dois modos:
 
 - **Manual**: o operador informa ECC, RCF, Fang, Fenerg, Linha de Base e o nome
