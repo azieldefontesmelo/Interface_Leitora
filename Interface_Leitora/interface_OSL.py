@@ -21,6 +21,7 @@ from kivy.uix.screenmanager import Screen
 from kivy.uix.popup import Popup
 from kivy.uix.label import Label
 from kivy.uix.boxlayout import BoxLayout
+from kivy.uix.gridlayout import GridLayout
 from kivy.uix.filechooser import FileChooserListView
 from kivy.uix.image import Image
 from kivy.uix.textinput import TextInput
@@ -110,6 +111,33 @@ class BotaoNavegacaoParametros(Button):
 class EntradaData(TextInput):
     """Campo de data com digitação livre, sem inserir barras automaticamente."""
 
+    pass
+
+
+class _PainelModoTouch:
+    """Impede que controles de um painel recolhido capturem o mouse."""
+
+    def on_touch_down(self, touch):
+        if self.disabled:
+            return False
+        return super().on_touch_down(touch)
+
+    def on_touch_move(self, touch):
+        if self.disabled:
+            return False
+        return super().on_touch_move(touch)
+
+    def on_touch_up(self, touch):
+        if self.disabled:
+            return False
+        return super().on_touch_up(touch)
+
+
+class PainelModoManual(_PainelModoTouch, GridLayout):
+    pass
+
+
+class PainelModoDosimetro(_PainelModoTouch, BoxLayout):
     pass
 
 

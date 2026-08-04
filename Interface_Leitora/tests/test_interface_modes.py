@@ -120,6 +120,28 @@ class InterfaceModeTestCase(unittest.TestCase):
         self.assertEqual(self.main.ids.dosimeter_panel.opacity, 0)
         self.assertFalse(self.main.ids.ecc_textInput.disabled)
 
+    def test_hidden_mode_panel_does_not_block_text_fields(self):
+        self.main.selecionar_modo("DOSIMETER_ID")
+        Clock.tick()
+        self.main.selecionar_modo("MANUAL")
+        Clock.tick()
+
+        manual_field = self.main.ids.rcf_textInput
+        hidden_control = self.main.ids.reader_spinner
+        self.assertTrue(hidden_control.collide_point(*manual_field.center))
+
+        class Touch:
+            pos = manual_field.center
+
+        self.assertFalse(
+            self.main.ids.dosimeter_panel.dispatch("on_touch_down", Touch())
+        )
+
+        manual_field.focus = True
+        manual_field.text = ""
+        manual_field.insert_text("0.000044")
+        self.assertEqual(manual_field.text, "0.000044")
+
     def test_02_barcode_enter_validates_without_starting(self):
         self.main.selecionar_modo("DOSIMETER_ID")
         Clock.tick()
