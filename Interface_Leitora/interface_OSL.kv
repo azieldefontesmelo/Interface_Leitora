@@ -320,170 +320,180 @@ ScreenManager:
                             pos: self.x, self.y
                             size: self.width, dp(3)
 
-            PainelModoManual:
-                id: manual_panel
-                cols: 2
+            ScreenManager:
+                id: mode_manager
                 size_hint_y: None
-                height: dp(216) if root.test_mode == "MANUAL" else 0
-                opacity: 1 if root.test_mode == "MANUAL" else 0
-                disabled: root.test_mode != "MANUAL"
-                spacing: 6
+                height: dp(226)
+                transition: NoTransition()
 
-                Label:
-                    text: "ECC"
-                    font_size: "18sp"
-                TextInput:
-                    id: ecc_textInput
-                    text: "1"
-                    multiline: False
+                Screen:
+                    name: "MANUAL"
 
-                Label:
-                    text: "RCF"
-                    font_size: "18sp"
-                TextInput:
-                    id: rcf_textInput
-                    text: "0.000033"
-                    multiline: False
-
-                Label:
-                    text: "Fang"
-                    font_size: "18sp"
-                TextInput:
-                    id: fcal_textInput
-                    text: "1"
-                    multiline: False
-
-                Label:
-                    text: "Fenerg"
-                    font_size: "18sp"
-                TextInput:
-                    id: fenerg_textInput
-                    text: "1"
-                    multiline: False
-
-                Label:
-                    text: "Base Line"
-                    font_size: "18sp"
-                TextInput:
-                    id: branco_textInput
-                    text: "0"
-                    multiline: False
-
-                Label:
-                    text: "File Name"
-                    font_size: "18sp"
-                TextInput:
-                    id: nome_arquivo_input
-                    hint_text: "File Name"
-                    multiline: False
-
-            PainelModoDosimetro:
-                id: dosimeter_panel
-                orientation: "vertical"
-                size_hint_y: None
-                height: dp(226) if root.test_mode == "DOSIMETER_ID" else 0
-                opacity: 1 if root.test_mode == "DOSIMETER_ID" else 0
-                disabled: root.test_mode != "DOSIMETER_ID"
-                spacing: 6
-
-                BoxLayout:
-                    size_hint_y: None
-                    height: "50dp"
-                    spacing: 8
-
-                    BoxLayout:
-                        orientation: "vertical"
+                    GridLayout:
+                        id: manual_panel
+                        cols: 2
+                        spacing: 6
 
                         Label:
-                            text: "Dosímetro ID"
-                            size_hint_y: None
-                            height: "18dp"
-                            text_size: self.size
-                            halign: "left"
-                            valign: "middle"
+                            text: "ECC"
+                            font_size: "18sp"
 
                         TextInput:
-                            id: dosimeter_id_input
-                            hint_text: "Leia os 10 dígitos e pressione Enter"
+                            id: ecc_textInput
+                            text: "1"
                             multiline: False
-                            disabled: root.test_session_active
-                            on_text: root.dosimetro_texto_alterado(self.text)
-                            on_text_validate: root.confirmar_codigo_dosimetro()
-
-                    BoxLayout:
-                        orientation: "vertical"
 
                         Label:
-                            text: "Leitora"
+                            text: "RCF"
+                            font_size: "18sp"
+
+                        TextInput:
+                            id: rcf_textInput
+                            text: "0.000033"
+                            multiline: False
+
+                        Label:
+                            text: "Fang"
+                            font_size: "18sp"
+
+                        TextInput:
+                            id: fcal_textInput
+                            text: "1"
+                            multiline: False
+
+                        Label:
+                            text: "Fenerg"
+                            font_size: "18sp"
+
+                        TextInput:
+                            id: fenerg_textInput
+                            text: "1"
+                            multiline: False
+
+                        Label:
+                            text: "Base Line"
+                            font_size: "18sp"
+
+                        TextInput:
+                            id: branco_textInput
+                            text: "0"
+                            multiline: False
+
+                        Label:
+                            text: "File Name"
+                            font_size: "18sp"
+
+                        TextInput:
+                            id: nome_arquivo_input
+                            hint_text: "File Name"
+                            multiline: False
+
+                Screen:
+                    name: "DOSIMETER_ID"
+
+                    BoxLayout:
+                        id: dosimeter_panel
+                        orientation: "vertical"
+                        spacing: 6
+
+                        BoxLayout:
                             size_hint_y: None
-                            height: "18dp"
+                            height: "50dp"
+                            spacing: 8
+
+                            BoxLayout:
+                                orientation: "vertical"
+
+                                Label:
+                                    text: "Dosímetro ID"
+                                    size_hint_y: None
+                                    height: "18dp"
+                                    text_size: self.size
+                                    halign: "left"
+                                    valign: "middle"
+
+                                TextInput:
+                                    id: dosimeter_id_input
+                                    hint_text: "Leia os 10 dígitos e pressione Enter"
+                                    multiline: False
+                                    disabled: root.test_session_active
+                                    on_text: root.dosimetro_texto_alterado(self.text)
+                                    on_text_validate: root.confirmar_codigo_dosimetro()
+
+                            BoxLayout:
+                                orientation: "vertical"
+
+                                Label:
+                                    text: "Leitora"
+                                    size_hint_y: None
+                                    height: "18dp"
+                                    text_size: self.size
+                                    halign: "left"
+                                    valign: "middle"
+
+                                Spinner:
+                                    id: reader_spinner
+                                    text: "Selecione a leitora"
+                                    values: []
+                                    disabled: root.test_session_active
+                                    on_text: root.leitora_selecionada(self.text)
+
+                        BoxLayout:
+                            size_hint_y: None
+                            height: "42dp"
+                            spacing: 8
+
+                            Label:
+                                text: "Grandeza"
+                                size_hint_x: None
+                                width: "100dp"
+                                text_size: self.size
+                                halign: "left"
+                                valign: "middle"
+
+                            Button:
+                                id: hp10_button
+                                text: "Lendo Hp(10)..." if root.acquisition_active and root.dose_channel == "HP10" else ("Hp(10) concluído  ✓" if root.hp10_complete else "Hp(10)")
+                                background_normal: ""
+                                background_down: ""
+                                background_color: (0.08, 0.55, 0.95, 1) if root.dose_channel == "HP10" else (0.16, 0.16, 0.16, 1)
+                                disabled: root.acquisition_active or root.hp10_complete or (root.test_session_active and root.dose_channel != "HP10")
+                                on_release: root.selecionar_grandeza("HP10")
+
+                            Button:
+                                id: hp007_button
+                                text: "Lendo Hp(0,07)..." if root.acquisition_active and root.dose_channel == "HP007" else ("Hp(0,07) concluído  ✓" if root.hp007_complete else "Hp(0,07)")
+                                background_normal: ""
+                                background_down: ""
+                                background_color: (0.08, 0.55, 0.95, 1) if root.dose_channel == "HP007" else (0.16, 0.16, 0.16, 1)
+                                disabled: root.acquisition_active or root.hp007_complete or (root.test_session_active and root.dose_channel != "HP007")
+                                on_release: root.selecionar_grandeza("HP007")
+
+                        Label:
+                            text: root.dosimeter_status
+                            size_hint_y: None
+                            height: "32dp"
+                            text_size: self.size
+                            halign: "left"
+                            valign: "middle"
+                            color: (0.42, 0.86, 0.48, 1) if root.start_allowed else (0.92, 0.72, 0.35, 1)
+
+                        Label:
+                            text: "ECC: {}   •   BC: {}   •   RCF: {}   •   Arquivo: {}".format(root.loaded_ecc, root.loaded_bc, root.loaded_rcf, root.automatic_file_name)
+                            size_hint_y: None
+                            height: "32dp"
                             text_size: self.size
                             halign: "left"
                             valign: "middle"
 
-                        Spinner:
-                            id: reader_spinner
-                            text: "Selecione a leitora"
-                            values: []
-                            disabled: root.test_session_active
-                            on_text: root.leitora_selecionada(self.text)
-
-                BoxLayout:
-                    size_hint_y: None
-                    height: "42dp"
-                    spacing: 8
-
-                    Label:
-                        text: "Grandeza"
-                        size_hint_x: None
-                        width: "100dp"
-                        text_size: self.size
-                        halign: "left"
-                        valign: "middle"
-
-                    Button:
-                        id: hp10_button
-                        text: "Lendo Hp(10)..." if root.acquisition_active and root.dose_channel == "HP10" else ("Hp(10) concluído  ✓" if root.hp10_complete else "Hp(10)")
-                        background_normal: ""
-                        background_down: ""
-                        background_color: (0.08, 0.55, 0.95, 1) if root.dose_channel == "HP10" else (0.16, 0.16, 0.16, 1)
-                        disabled: root.acquisition_active or root.hp10_complete or (root.test_session_active and root.dose_channel != "HP10")
-                        on_release: root.selecionar_grandeza("HP10")
-
-                    Button:
-                        id: hp007_button
-                        text: "Lendo Hp(0,07)..." if root.acquisition_active and root.dose_channel == "HP007" else ("Hp(0,07) concluído  ✓" if root.hp007_complete else "Hp(0,07)")
-                        background_normal: ""
-                        background_down: ""
-                        background_color: (0.08, 0.55, 0.95, 1) if root.dose_channel == "HP007" else (0.16, 0.16, 0.16, 1)
-                        disabled: root.acquisition_active or root.hp007_complete or (root.test_session_active and root.dose_channel != "HP007")
-                        on_release: root.selecionar_grandeza("HP007")
-
-                Label:
-                    text: root.dosimeter_status
-                    size_hint_y: None
-                    height: "32dp"
-                    text_size: self.size
-                    halign: "left"
-                    valign: "middle"
-                    color: (0.42, 0.86, 0.48, 1) if root.start_allowed else (0.92, 0.72, 0.35, 1)
-
-                Label:
-                    text: "ECC: {}   •   BC: {}   •   RCF: {}   •   Arquivo: {}".format(root.loaded_ecc, root.loaded_bc, root.loaded_rcf, root.automatic_file_name)
-                    size_hint_y: None
-                    height: "32dp"
-                    text_size: self.size
-                    halign: "left"
-                    valign: "middle"
-
-                Label:
-                    text: "ECC e BC são carregados do cadastro conforme a grandeza selecionada."
-                    size_hint_y: None
-                    height: "28dp"
-                    color: 0.68, 0.68, 0.68, 1
-                    text_size: self.size
-                    halign: "left"
-                    valign: "middle"
+                        Label:
+                            text: "ECC e BC são carregados do cadastro conforme a grandeza selecionada."
+                            size_hint_y: None
+                            height: "28dp"
+                            color: 0.68, 0.68, 0.68, 1
+                            text_size: self.size
+                            halign: "left"
+                            valign: "middle"
 
             GridLayout:
                 cols: 2

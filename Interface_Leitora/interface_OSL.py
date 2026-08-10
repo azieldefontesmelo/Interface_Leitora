@@ -17,6 +17,7 @@ from kivy.core.window import Window
 from kivy.lang import Builder
 from kivy.properties import BooleanProperty, NumericProperty, StringProperty
 from kivy.uix.button import Button
+from kivy.uix.screenmanager import ScreenManager
 from kivy.uix.screenmanager import Screen
 from kivy.uix.popup import Popup
 from kivy.uix.label import Label
@@ -106,7 +107,6 @@ class BotaoNavegacaoParametros(Button):
             (0.25, 0.25, 0.25, 1)
             if dentro else (0.18, 0.18, 0.18, 1)
         )
-
 
 class EntradaData(TextInput):
     """Campo de data com digitação livre, sem inserir barras automaticamente."""
@@ -498,6 +498,7 @@ class GraficoTempoReal(Widget):
         return f"{valor:.3f}"
 
 
+
 class NoArvoreArquivos(BoxLayout, TreeViewNode):
     """Item visual da árvore de pastas e arquivos."""
 
@@ -536,26 +537,26 @@ class NoArvoreArquivos(BoxLayout, TreeViewNode):
         nome.bind(size=lambda widget, tamanho: setattr(widget, "text_size", tamanho))
         self.add_widget(nome)
 
-    def on_touch_down(self, touch):
-        if (
-            self.pasta
-            and not touch.is_mouse_scrolling
-            and self.collide_point(*touch.pos)
-        ):
-            # Permite abrir/fechar a pasta clicando na linha inteira,
-            # inclusive no ícone ou no nome, e não somente na seta.
-            if isinstance(self.parent, TreeView):
-                self.parent.toggle_node(self)
-            return True
-
-        if (
-            touch.is_double_tap
-            and self.caminho
-            and self.caminho.is_file()
-            and self.duplo_clique_callback
-        ):
-            self.duplo_clique_callback(self)
-        return super().on_touch_down(touch)
+    # def on_touch_down(self, touch):
+    #     if (
+    #         self.pasta
+    #         and not touch.is_mouse_scrolling
+    #         and self.collide_point(*touch.pos)
+    #     ):
+    #         # Permite abrir/fechar a pasta clicando na linha inteira,
+    #         # inclusive no ícone ou no nome, e não somente na seta.
+    #         if isinstance(self.parent, TreeView):
+    #             self.parent.toggle_node(self)
+    #         return True
+    #
+    #     if (
+    #         touch.is_double_tap
+    #         and self.caminho
+    #         and self.caminho.is_file()
+    #         and self.duplo_clique_callback
+    #     ):
+    #         self.duplo_clique_callback(self)
+    #     return super().on_touch_down(touch)
 
 
 class ArvoreArquivos(TreeView):
@@ -731,6 +732,7 @@ class TelaPrincipalLeitora(Screen):
             )
             return
         self.test_mode = normalized_mode
+        self.ids.mode_manager.current = self.test_mode
         if normalized_mode == "MANUAL":
             self.reading_type = "PERSONAL_DOSE"
         self.start_allowed = normalized_mode == "MANUAL"
@@ -761,6 +763,7 @@ class TelaPrincipalLeitora(Screen):
         self.enviar_comando_sudo("zerar")
 
     def agendar_foco_dosimetro(self, selecionar=True):
+
         Clock.schedule_once(
             lambda _dt: self._focar_dosimetro(selecionar),
             0,
@@ -1356,6 +1359,7 @@ class TelaPrincipalLeitora(Screen):
 
         self.conectar_serial()
 
+
     def conectar_serial(self, *args):
         lbl_erro.text = "Wait a Moment."
         popupNomeArquivo.open()
@@ -1451,7 +1455,6 @@ class TelaPrincipalLeitora(Screen):
     def processar_frame(self, frame):
         self.ids.recebido_label.text = f"Recebido: {frame}&"
         print(f"RECEBIDO: {frame}&")
-        print(f"f_luz_ref: {self.f_luz_ref}")
         # O frame D fecha a amostra (ultima coluna); os demais sao colunas
         # intermediarias. Cada linha comeca pelo Tempo (ver registrar_valor).
         if frame.startswith("#L1%D"):
@@ -1627,11 +1630,11 @@ class TelaPrincipalLeitora(Screen):
         return False
 
     def _validar_tempo(self, valor, nome):
-        if valor.isdigit() and 1 <= len(valor) <= 5:
+        if valor.isdigit() and 1 <= len(valor) <= 6:
             return True
 
         self.atualizar_status(
-            f"Campo {nome} deve ser numerico com ate 5 digitos."
+            f"Campo {nome} deve ser numerico com ate 6 digitos."
         )
         return False
 
@@ -1665,17 +1668,17 @@ class LinhaTabelaDados(BoxLayout):
         self.record = record
         self.selection_callback = selection_callback
 
-    def on_touch_up(self, touch):
-        handled = super().on_touch_up(touch)
-        if handled:
-            return True
-        if (
-            self.selection_callback is not None
-            and self.collide_point(*touch.pos)
-        ):
-            self.selection_callback(self.record)
-            return True
-        return False
+    #def on_touch_up(self, touch):
+    #    handled = super().on_touch_up(touch)
+    #    if handled:
+    #        return True
+    #    if (
+    #        self.selection_callback is not None
+    #        and self.collide_point(*touch.pos)
+    #    ):
+    #        self.selection_callback(self.record)
+    #        return True
+    #    return False
 
 
 class TelaParametrosLeitura(Screen):
