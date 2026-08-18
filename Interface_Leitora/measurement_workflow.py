@@ -62,7 +62,26 @@ def dosimeter_filename(
     suffix = f"_{'_'.join(suffixes)}" if suffixes else ""
     return safe_test_filename(
         f"{dosimeter_id}{suffix}_"
-        f"{moment.strftime('%Y-%m-%d_%H-%M-%S-%f')}.txt"
+        f"{moment.strftime('%Y-%m-%d_%H-%M-%S')}.txt"
+    )
+
+
+def append_filename_observation(filename: str, observation: str) -> str:
+    """Append an optional operator observation to a generated filename."""
+    clean_filename = safe_test_filename(filename)
+    clean_observation = " ".join(str(observation).strip().split())
+    if not clean_observation:
+        return clean_filename
+    if INVALID_WINDOWS_FILENAME.search(clean_observation):
+        raise ValueError(
+            "A observação do arquivo contém caracteres inválidos"
+        )
+    if clean_observation.endswith((" ", ".")):
+        raise ValueError(
+            "A observação do arquivo não pode terminar em espaço ou ponto"
+        )
+    return safe_test_filename(
+        f"{Path(clean_filename).stem}_{clean_observation}.txt"
     )
 
 

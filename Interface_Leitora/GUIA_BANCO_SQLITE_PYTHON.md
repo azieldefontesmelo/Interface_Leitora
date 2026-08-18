@@ -1,12 +1,14 @@
 # Especificação do banco SQLite para o novo projeto Python
 
 > **Documento histórico:** a especificação abaixo descreve o modelo anterior
-> de dose única e foi substituída pelo esquema v6 implementado em
+> de dose única e foi substituída pelo esquema v7 implementado em
 > `database.py`. No modelo atual, cada dosímetro possui `ecc_hp10`,
-> `ecc_hp007`, `bc_hp10` e `bc_hp007`; cada teste reúne aquisições `HP10` e
+> `ecc_hp007`, `bl_hp10` e `bl_hp007`; cada teste reúne aquisições `HP10` e
 > `HP007` na mesma sessão; e o histórico consolidado só é criado após as duas
 > aquisições. Uma sessão é classificada como `BACKGROUND` (Linha de Base)
-> somente quando iniciada pelo comando de zeramento.
+> somente quando iniciada pelo comando de zeramento. Essas leituras salvam
+> `hp10_counts` e `hp007_counts` sem aplicar ECC ou RCF e atualizam o BL do
+> dosímetro cadastrado ao concluir o par.
 
 ## 1. Objetivo
 

@@ -5,7 +5,7 @@ a = Analysis(
     ['interface_OSL.py'],
     pathex=[],
     binaries=[],
-    datas=[('interface_OSL.kv', '.'), ('assets', 'assets')],
+    datas=[('interface_OSL.kv', '.'), ('assets/UI', 'assets/UI')],
     hiddenimports=[],
     hookspath=[],
     hooksconfig={},
@@ -19,8 +19,9 @@ pyz = PYZ(a.pure)
 exe = EXE(
     pyz,
     a.scripts,
+    a.binaries,
+    a.datas,
     [],
-    exclude_binaries=True,
     name='OSLMeter',
     debug=False,
     bootloader_ignore_signals=False,
@@ -32,13 +33,4 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
-)
-coll = COLLECT(
-    exe,
-    a.binaries,
-    a.datas,
-    strip=False,
-    upx=True,
-    upx_exclude=[],
-    name='OSLMeter',
 )

@@ -4,6 +4,7 @@ import unittest
 from datetime import datetime
 
 from measurement_workflow import (
+    append_filename_observation,
     calculate_dose,
     dosimeter_filename,
     safe_test_filename,
@@ -29,7 +30,7 @@ class MeasurementWorkflowTestCase(unittest.TestCase):
                 "0123456789",
                 datetime(2026, 7, 30, 12, 34, 56),
             ),
-            "0123456789_2026-07-30_12-34-56-000000.txt",
+            "0123456789_2026-07-30_12-34-56.txt",
         )
         self.assertEqual(
             dosimeter_filename(
@@ -38,8 +39,23 @@ class MeasurementWorkflowTestCase(unittest.TestCase):
                 dose_channel="HP007",
                 reading_type="BACKGROUND",
             ),
-            "0123456789_linha-base_hp007_2026-07-30_12-34-56-000000.txt",
+            "0123456789_linha-base_hp007_2026-07-30_12-34-56.txt",
         )
+
+    def test_filename_observation_is_appended_safely(self):
+        self.assertEqual(
+            append_filename_observation(
+                "0123456789_2026-07-30_12-34-56.txt",
+                "sala 2",
+            ),
+            "0123456789_2026-07-30_12-34-56_sala 2.txt",
+        )
+        self.assertEqual(
+            append_filename_observation("leitura.txt", ""),
+            "leitura.txt",
+        )
+        with self.assertRaises(ValueError):
+            append_filename_observation("leitura.txt", "sala/2")
 
     def test_preserves_dose_formula(self):
         self.assertEqual(

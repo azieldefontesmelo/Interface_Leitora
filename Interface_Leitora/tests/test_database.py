@@ -34,8 +34,8 @@ class DatabaseTestCase(unittest.TestCase):
             "0123456789",
             ecc_hp10=1.25,
             ecc_hp007=1.5,
-            bc_hp10=100,
-            bc_hp007=200,
+            bl_hp10=100,
+            bl_hp007=200,
             begin_date="2025-01-01",
             end_date="2030-12-31",
         )
@@ -116,19 +116,19 @@ class DatabaseTestCase(unittest.TestCase):
         self.assertIn("dose_channel", columns)
         self.assertIn("test_session_id", columns)
         self.assertIn("dose_dos", dose_history_columns)
-        self.assertIn("dose_bg", background_history_columns)
+        self.assertIn("counts", background_history_columns)
         self.assertIn("hp10_dos", dose_history_columns)
         self.assertIn("hp007_dos", dose_history_columns)
-        self.assertIn("hp10_bg", background_history_columns)
-        self.assertIn("hp007_bg", background_history_columns)
+        self.assertIn("hp10_counts", background_history_columns)
+        self.assertIn("hp007_counts", background_history_columns)
 
     def test_dosimeter_crud_preserves_leading_zero(self):
         self.database.register_dosimeter(
             "0123456789",
             ecc_hp10=1.2,
             ecc_hp007=1.3,
-            bc_hp10=100,
-            bc_hp007=200,
+            bl_hp10=100,
+            bl_hp007=200,
             begin_date="01/01/2025",
             end_date="31/12/2030",
         )
@@ -137,15 +137,15 @@ class DatabaseTestCase(unittest.TestCase):
         self.assertEqual(record["ecc"], 1.2)
         self.assertEqual(record["ecc_hp10"], 1.2)
         self.assertEqual(record["ecc_hp007"], 1.3)
-        self.assertEqual(record["bc_hp10"], 100)
-        self.assertEqual(record["bc_hp007"], 200)
+        self.assertEqual(record["bl_hp10"], 100)
+        self.assertEqual(record["bl_hp007"], 200)
         self.assertTrue(
             self.database.update_dosimeter(
                 "0123456789",
                 ecc_hp10=1.4,
                 ecc_hp007=1.6,
-                bc_hp10=110,
-                bc_hp007=210,
+                bl_hp10=110,
+                bl_hp007=210,
                 begin_date="2025-01-01",
                 end_date="2030-12-31",
                 active=True,
@@ -461,12 +461,12 @@ class DatabaseTestCase(unittest.TestCase):
         )
         older_background_id = self.database.add_background(
             "0123456789",
-            dose_bg=1.912,
+            counts=1912,
             time_bg="2026-07-28T10:00:00Z",
         )
         latest_background_id = self.database.add_background(
             "0123456789",
-            dose_bg=2.001,
+            counts=2001,
             time_bg="2026-07-30T10:00:00Z",
         )
 
@@ -481,6 +481,9 @@ class DatabaseTestCase(unittest.TestCase):
         latest = self.database.get_latest_background("0123456789")
         self.assertEqual(latest["id"], latest_background_id)
         self.assertEqual(latest["status_bg"], BACKGROUND_STATUS)
+        dosimeter = self.database.get_dosimeter("0123456789")
+        self.assertEqual(dosimeter["bl_hp10"], 2001)
+        self.assertEqual(dosimeter["bl_hp007"], 2001)
         historical = self.database.get_latest_background(
             "0123456789",
             at_time="2026-07-29T00:00:00Z",
@@ -488,19 +491,19 @@ class DatabaseTestCase(unittest.TestCase):
         self.assertEqual(historical["id"], older_background_id)
         self.assertEqual(
             self.database.get_background_value("0123456789"),
-            2.001,
+            2001,
         )
         calculated = self.database.calculate_net_personal_dose(
             "0123456789",
             "3001A01",
-            dose_reading=2.387,
+            raw_signal=2387,
             measured_at="2026-07-31T10:00:00Z",
         )
         self.assertAlmostEqual(
             calculated["dose_msv"],
-            2.387 - 2.001,
+            (2387 - 2001) * 0.000033 * 1.25,
         )
-        self.assertEqual(calculated["background_msv"], 2.001)
+        self.assertEqual(calculated["baseline_counts"], 2001)
 
         with self.database.connect() as connection:
             dose_count = connection.execute(
@@ -553,6 +556,7 @@ class DatabaseTestCase(unittest.TestCase):
         background_hp007_id = self.add_valid_measurement(
             file_name="background-hp007.txt",
             measured_at="2026-07-30T13:01:00Z",
+            raw_signal=2002,
             reading_type="BACKGROUND",
             dose_channel="HP007",
             test_session_id=background_session,
@@ -560,8 +564,91 @@ class DatabaseTestCase(unittest.TestCase):
         background = self.database.sync_measurement_history(background_hp007_id)
         self.assertEqual(background["hp10_measurement_id"], background_hp10_id)
         self.assertEqual(background["hp007_measurement_id"], background_hp007_id)
+        self.assertEqual(background["hp10_counts"], 1811)
+        self.assertEqual(background["hp007_counts"], 2002)
+        self.assertEqual(background["counts"], 2002)
+        dosimeter = self.database.get_dosimeter("0123456789")
+        self.assertEqual(dosimeter["bl_hp10"], 1811)
+        self.assertEqual(dosimeter["bl_hp007"], 2002)
         self.assertEqual(len(self.database.search_personal_doses()), 1)
         self.assertEqual(len(self.database.search_backgrounds()), 1)
+
+    def test_operator_selected_bl_updates_existing_fields_without_migration(self):
+        self.register_valid_records()
+        session_id = uuid4().hex
+        hp10_first = self.add_valid_measurement(
+            raw_signal=1111,
+            dose_msv=0,
+            reading_type="BACKGROUND",
+            dose_channel="HP10",
+            test_session_id=session_id,
+        )
+        hp10_selected = self.add_valid_measurement(
+            raw_signal=1222,
+            dose_msv=0,
+            reading_type="BACKGROUND",
+            dose_channel="HP10",
+            test_session_id=session_id,
+        )
+        hp007_selected = self.add_valid_measurement(
+            raw_signal=2333,
+            dose_msv=0,
+            reading_type="BACKGROUND",
+            dose_channel="HP007",
+            test_session_id=session_id,
+        )
+
+        readings = self.database.get_baseline_session_measurements(session_id)
+        self.assertEqual([record["id"] for record in readings], [
+            hp10_first,
+            hp10_selected,
+            hp007_selected,
+        ])
+        before = self.database.get_dosimeter("0123456789")
+        self.assertEqual(before["bl_hp10"], 100)
+        self.assertEqual(before["bl_hp007"], 200)
+
+        history = self.database.apply_baseline_selection(
+            session_id,
+            "0123456789",
+            hp10_measurement_id=hp10_selected,
+            hp007_measurement_id=hp007_selected,
+        )
+
+        self.assertEqual(history["hp10_measurement_id"], hp10_selected)
+        self.assertEqual(history["hp007_measurement_id"], hp007_selected)
+        self.assertEqual(history["hp10_counts"], 1222)
+        self.assertEqual(history["hp007_counts"], 2333)
+        updated = self.database.get_dosimeter("0123456789")
+        self.assertEqual(updated["bl_hp10"], 1222)
+        self.assertEqual(updated["bl_hp007"], 2333)
+        self.assertIsNone(self.database.get_measurement(hp10_first)["notes"])
+        self.assertIn(
+            "Selecionada como BL HP10",
+            self.database.get_measurement(hp10_selected)["notes"],
+        )
+
+        hp10_only_session = uuid4().hex
+        hp10_only = self.add_valid_measurement(
+            raw_signal=1444,
+            dose_msv=0,
+            reading_type="BACKGROUND",
+            dose_channel="HP10",
+            test_session_id=hp10_only_session,
+        )
+        self.database.apply_baseline_selection(
+            hp10_only_session,
+            "0123456789",
+            hp10_measurement_id=hp10_only,
+        )
+        one_channel_update = self.database.get_dosimeter("0123456789")
+        self.assertEqual(one_channel_update["bl_hp10"], 1444)
+        self.assertEqual(one_channel_update["bl_hp007"], 2333)
+        with self.database.connect() as connection:
+            self.assertEqual(
+                connection.execute("PRAGMA user_version").fetchone()[0],
+                SCHEMA_VERSION,
+            )
 
     def test_background_default_validation_and_specific_csv_exports(self):
         self.register_valid_records()
@@ -578,7 +665,7 @@ class DatabaseTestCase(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "não pode ser negativo"):
             self.database.add_background(
                 "0123456789",
-                dose_bg=-1,
+                counts=-1,
             )
 
         self.database.add_personal_dose(
@@ -588,7 +675,7 @@ class DatabaseTestCase(unittest.TestCase):
         )
         self.database.add_background(
             "0123456789",
-            dose_bg=3,
+            counts=3,
             time_bg="2026-07-29T11:00:00Z",
         )
         dose_csv = self.database.export_personal_doses_csv(
@@ -642,8 +729,8 @@ class DatabaseTestCase(unittest.TestCase):
         legacy_schema = SCHEMA.replace(
             "    ecc_hp10     REAL NOT NULL CHECK (ecc_hp10 > 0),\n"
             "    ecc_hp007    REAL NOT NULL CHECK (ecc_hp007 > 0),\n"
-            "    bc_hp10      REAL NOT NULL DEFAULT 0 CHECK (bc_hp10 >= 0),\n"
-            "    bc_hp007     REAL NOT NULL DEFAULT 0 CHECK (bc_hp007 >= 0),\n",
+            "    bl_hp10      REAL NOT NULL DEFAULT 1 CHECK (bl_hp10 >= 0),\n"
+            "    bl_hp007     REAL NOT NULL DEFAULT 1 CHECK (bl_hp007 >= 0),\n",
             "    ecc          REAL NOT NULL CHECK (ecc > 0),\n",
             1,
         ).replace(
@@ -705,6 +792,59 @@ class DatabaseTestCase(unittest.TestCase):
             )["end_date"]
         )
 
+    def test_v6_bc_and_background_dose_columns_are_migrated_to_bl_counts(self):
+        self.register_valid_records()
+        session_id = uuid4().hex
+        hp10_id = self.add_valid_measurement(
+            reading_type="BACKGROUND",
+            dose_channel="HP10",
+            test_session_id=session_id,
+            raw_signal=1111,
+        )
+        hp007_id = self.add_valid_measurement(
+            reading_type="BACKGROUND",
+            dose_channel="HP007",
+            test_session_id=session_id,
+            measured_at="2026-07-30T12:01:00Z",
+            raw_signal=2222,
+        )
+        self.assertIsNotNone(self.database.sync_measurement_history(hp007_id))
+
+        with self.database.connect() as connection:
+            connection.execute(
+                "ALTER TABLE dosimeters RENAME COLUMN bl_hp10 TO bc_hp10"
+            )
+            connection.execute(
+                "ALTER TABLE dosimeters RENAME COLUMN bl_hp007 TO bc_hp007"
+            )
+            connection.execute(
+                "ALTER TABLE historico_branco "
+                "RENAME COLUMN hp10_counts TO hp10_bg"
+            )
+            connection.execute(
+                "ALTER TABLE historico_branco "
+                "RENAME COLUMN hp007_counts TO hp007_bg"
+            )
+            connection.execute(
+                "ALTER TABLE historico_branco RENAME COLUMN counts TO dose_bg"
+            )
+            connection.execute(
+                "UPDATE historico_branco "
+                "SET hp10_bg = 0.1, hp007_bg = 0.2, dose_bg = 0.2"
+            )
+            connection.execute("PRAGMA user_version = 6")
+
+        upgraded = Database(self.db_path)
+        dosimeter = upgraded.get_dosimeter("0123456789")
+        self.assertEqual(dosimeter["bl_hp10"], 1111)
+        self.assertEqual(dosimeter["bl_hp007"], 2222)
+        background = upgraded.get_latest_background("0123456789")
+        self.assertEqual(background["hp10_measurement_id"], hp10_id)
+        self.assertEqual(background["hp007_measurement_id"], hp007_id)
+        self.assertEqual(background["hp10_counts"], 1111)
+        self.assertEqual(background["hp007_counts"], 2222)
+        self.assertNotIn("bc_hp10", dosimeter)
+
     def test_foreign_keys_prevent_history_loss(self):
         self.register_valid_records()
         self.add_valid_measurement()
@@ -727,8 +867,8 @@ class DatabaseTestCase(unittest.TestCase):
                 new_dosimeter_id="9876543210",
                 ecc_hp10=1.3,
                 ecc_hp007=1.6,
-                bc_hp10=110,
-                bc_hp007=210,
+                bl_hp10=110,
+                bl_hp007=210,
                 begin_date="2025-02-01",
                 end_date="2031-02-01",
                 active=True,

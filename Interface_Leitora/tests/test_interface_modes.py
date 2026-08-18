@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import tempfile
 import unittest
+from datetime import datetime
 from pathlib import Path
 
 from kivy.clock import Clock
@@ -31,13 +32,14 @@ class InterfaceModeTestCase(unittest.TestCase):
         cls.root_path = Path(cls.temporary_directory.name)
         interface_OSL.TESTES_DIR = cls.root_path / "assets" / "testes"
         interface_OSL.LOG_SERIAL_DIR = cls.root_path / "assets" / "log"
+        interface_OSL.SETTINGS_PATH = cls.root_path / "configuracoes.json"
         cls.database = Database(cls.root_path / "measurements.sqlite3")
         cls.database.register_dosimeter(
             "0123456789",
             ecc_hp10=1.25,
             ecc_hp007=1.5,
-            bc_hp10=100,
-            bc_hp007=200,
+            bl_hp10=100,
+            bl_hp007=200,
             begin_date="2025-01-01",
             end_date="2030-12-31",
         )
@@ -62,8 +64,8 @@ class InterfaceModeTestCase(unittest.TestCase):
             "0123456789",
             ecc_hp10=1.25,
             ecc_hp007=1.5,
-            bc_hp10=100,
-            bc_hp007=200,
+            bl_hp10=100,
+            bl_hp007=200,
             begin_date="2025-01-01",
             end_date="2030-12-31",
         )
@@ -90,12 +92,17 @@ class InterfaceModeTestCase(unittest.TestCase):
         self.main.active_test_reading_type = None
         self.main.acquisition_active = False
         self.main.test_session_active = False
+        self.main.baseline_mode_active = False
+        interface_OSL.SETTINGS_PATH.unlink(missing_ok=True)
+        self.main.bl_update_mode = "MANUAL"
+        self.main._sincronizar_botao_modo_bl()
         self.main.hp10_complete = False
         self.main.hp007_complete = False
         self.main.reading_type = "PERSONAL_DOSE"
         self.main.dose_channel = "HP10"
         self.main.test_mode = "MANUAL"
         self.main.ids.dosimeter_id_input.text = ""
+        self.main._resetar_estado_bl()
         self.main._invalidar_dosimetro("Aguardando leitura do código de barras")
         self.main.atualizar_leitoras_cadastradas()
 
@@ -158,10 +165,14 @@ class InterfaceModeTestCase(unittest.TestCase):
         self.assertTrue(self.main.start_allowed)
         self.assertFalse(self.main.ids.start_button.disabled)
         self.assertEqual(self.main.loaded_ecc, "1.25")
-        self.assertEqual(self.main.loaded_bc, "100")
+        self.assertEqual(self.main.loaded_bl, "100")
         self.assertEqual(self.main.loaded_rcf, "3.3e-05")
         self.assertTrue(
             self.main.automatic_file_name.startswith("0123456789_")
+        )
+        self.main.ids.arquivo_observacao_input.text = "sala 2"
+        self.assertTrue(
+            self.main.automatic_file_name.endswith("_sala 2.txt")
         )
         self.assertTrue(self.main.ids.dosimeter_id_input.focus)
 
@@ -175,8 +186,8 @@ class InterfaceModeTestCase(unittest.TestCase):
         self.bank.ids.db_dosimeter_id.text = "9876543210"
         self.bank.ids.db_dosimeter_ecc_hp10.text = "1,5"
         self.bank.ids.db_dosimeter_ecc_hp007.text = "1,7"
-        self.bank.ids.db_dosimeter_bc_hp10.text = "150"
-        self.bank.ids.db_dosimeter_bc_hp007.text = "170"
+        self.bank.ids.db_dosimeter_bl_hp10.text = "150"
+        self.bank.ids.db_dosimeter_bl_hp007.text = "170"
         self.bank.ids.db_dosimeter_begin.text = "01/01/2025"
         self.bank.ids.db_dosimeter_end.text = "31/12/2030"
         Clock.tick()
@@ -190,7 +201,7 @@ class InterfaceModeTestCase(unittest.TestCase):
             self.database.get_dosimeter("9876543210")["ecc_hp007"], 1.7
         )
         self.assertEqual(
-            self.database.get_dosimeter("9876543210")["bc_hp007"], 170
+            self.database.get_dosimeter("9876543210")["bl_hp007"], 170
         )
         self.bank.alternar_dosimetro()
         self.assertFalse(
@@ -223,7 +234,7 @@ class InterfaceModeTestCase(unittest.TestCase):
         )
         self.database.add_background(
             "0123456789",
-            dose_bg=1.912,
+            counts=1912,
         )
         self.bank.pesquisar_doses_pessoais()
         self.bank.pesquisar_backgrounds()
@@ -245,11 +256,66 @@ class InterfaceModeTestCase(unittest.TestCase):
                 "Hp(0,07) mSv", "Status",
             ],
         )
+        background_dataframe = self.bank._montar_dataframe_historico(
+            self.database.search_backgrounds(),
+            time_column="time_bg",
+            hp10_column="hp10_counts",
+            hp007_column="hp007_counts",
+            status_column="status_bg",
+            unit="Contagens",
+        )
+        self.assertEqual(
+            list(background_dataframe.columns),
+            [
+                "Data/hora", "Dosímetro", "Hp(10) Contagens",
+                "Hp(0,07) Contagens", "Status",
+            ],
+        )
         rendered_row = self.bank.ids.db_personal_dose_results.children[0]
         self.assertEqual(len(rendered_row.children), 5)
         self.assertFalse(
             any("|" in cell.text for cell in rendered_row.children)
         )
+
+    def test_unregistered_dosimeter_gets_defaults_and_tab_order(self):
+        new_id = "0000000002"
+        self.bank.ids.db_dosimeter_search.text = new_id
+        self.bank.pesquisar_dosimetros()
+
+        self.assertEqual(self.bank.ids.db_dosimeter_id.text, new_id)
+        self.assertEqual(self.bank.ids.db_dosimeter_ecc_hp10.text, "1")
+        self.assertEqual(self.bank.ids.db_dosimeter_ecc_hp007.text, "1")
+        self.assertEqual(self.bank.ids.db_dosimeter_bl_hp10.text, "1")
+        self.assertEqual(self.bank.ids.db_dosimeter_bl_hp007.text, "1")
+        self.assertEqual(
+            self.bank.ids.db_dosimeter_begin.text,
+            datetime.now().strftime("%d/%m/%Y"),
+        )
+        self.assertEqual(self.bank.ids.db_dosimeter_end.text, "")
+
+        focus_order = (
+            "db_dosimeter_search",
+            "db_dosimeter_id",
+            "db_dosimeter_ecc_hp10",
+            "db_dosimeter_ecc_hp007",
+            "db_dosimeter_bl_hp10",
+            "db_dosimeter_bl_hp007",
+            "db_dosimeter_begin",
+            "db_dosimeter_end",
+        )
+        for current_id, next_id in zip(focus_order, focus_order[1:] + focus_order[:1]):
+            self.assertIs(
+                self.bank.ids[current_id].focus_next,
+                self.bank.ids[next_id],
+            )
+
+        self.bank.salvar_dosimetro()
+        record = self.database.get_dosimeter(new_id)
+        self.assertEqual(record["ecc_hp10"], 1)
+        self.assertEqual(record["ecc_hp007"], 1)
+        self.assertEqual(record["bl_hp10"], 1)
+        self.assertEqual(record["bl_hp007"], 1)
+        self.assertEqual(record["begin_date"], datetime.now().strftime("%Y-%m-%d"))
 
     def test_date_fields_do_not_insert_slashes_automatically(self):
         field = self.bank.ids.db_dosimeter_begin
@@ -266,15 +332,15 @@ class InterfaceModeTestCase(unittest.TestCase):
         self.assertEqual(self.bank.ids.db_dosimeter_id.text, "0123456789")
         self.assertEqual(self.bank.ids.db_dosimeter_ecc_hp10.text, "1.25")
         self.assertEqual(self.bank.ids.db_dosimeter_ecc_hp007.text, "1.5")
-        self.assertEqual(self.bank.ids.db_dosimeter_bc_hp10.text, "100")
-        self.assertEqual(self.bank.ids.db_dosimeter_bc_hp007.text, "200")
+        self.assertEqual(self.bank.ids.db_dosimeter_bl_hp10.text, "100")
+        self.assertEqual(self.bank.ids.db_dosimeter_bl_hp007.text, "200")
         self.assertFalse(self.bank.ids.db_dosimeter_id.disabled)
 
         self.bank.ids.db_dosimeter_id.text = "9876543210"
         self.bank.ids.db_dosimeter_ecc_hp10.text = "1,3"
         self.bank.ids.db_dosimeter_ecc_hp007.text = "1,6"
-        self.bank.ids.db_dosimeter_bc_hp10.text = "110"
-        self.bank.ids.db_dosimeter_bc_hp007.text = "210"
+        self.bank.ids.db_dosimeter_bl_hp10.text = "110"
+        self.bank.ids.db_dosimeter_bl_hp007.text = "210"
         self.bank.ids.db_dosimeter_begin.text = "02/02/2025"
         self.bank.ids.db_dosimeter_end.text = "02/02/2031"
         self.bank.salvar_dosimetro()
@@ -282,7 +348,7 @@ class InterfaceModeTestCase(unittest.TestCase):
         self.assertIsNone(self.database.get_dosimeter("0123456789"))
         edited = self.database.get_dosimeter("9876543210")
         self.assertEqual(edited["ecc_hp10"], 1.3)
-        self.assertEqual(edited["bc_hp007"], 210)
+        self.assertEqual(edited["bl_hp007"], 210)
 
         self.database.add_personal_dose(
             "9876543210",
@@ -475,41 +541,118 @@ class InterfaceModeTestCase(unittest.TestCase):
     def test_055_post_erase_reading_is_saved_as_background(self):
         self.main.selecionar_modo("DOSIMETER_ID")
         self.main.serial_connection = FakeSerial()
+        self.assertEqual(self.main.bl_update_mode, "MANUAL")
+        self.assertEqual(
+            self.main.ids.grandeza_side.width,
+            self.main.ids.bl_repetition_controls.width,
+        )
+        self.assertEqual(self.main.ids.bl_repetition_controls.opacity, 0)
+        self.assertTrue(self.main.ids.bl_repetition_controls.disabled)
         self.main.botao_apagar()
+        self.assertTrue(self.main.baseline_mode_active)
+        self.assertEqual(self.main.ids.erase_button.text, "Finalizar modo BL")
+        self.assertEqual(self.main.ids.bl_repetition_controls.opacity, 1)
+        self.assertFalse(self.main.ids.bl_repetition_controls.disabled)
+        self.main.ids.bl_repetition_input.text = "3"
         self.main.ids.reader_spinner.text = "3001A01"
         self.main.ids.dosimeter_id_input.text = "0123456789"
         self.assertTrue(self.main.confirmar_codigo_dosimetro())
-        self.main.botao_leitura()
-        hp10_measurement_id = self.main.current_measurement_id
-        self.assertIsNotNone(hp10_measurement_id)
-        self.main.processar_frame("#L1%A1733")
-        self.main.processar_frame("#L1%E45")
-        self.main.f_fechar_log = True
-        self.main.processar_frame("#L1%D471")
 
-        hp10 = self.database.get_measurement(hp10_measurement_id)
-        self.assertEqual(hp10["reading_type"], "BACKGROUND")
-        self.assertEqual(hp10["dose_channel"], "HP10")
+        hp10_ids = []
+        for counts in (1733, 1744, 1755):
+            self.main.botao_leitura()
+            hp10_ids.append(self.main.current_measurement_id)
+            self.main.processar_frame(f"#L1%A{counts}")
+            self.main.processar_frame("#L1%E45")
+            self.main.f_fechar_log = True
+            self.main.processar_frame("#L1%D471")
+            self.assertEqual(self.main.dose_channel, "HP10")
+
+        self.assertEqual(self.main.bl_hp10_count, 3)
+        self.assertTrue(self.main.bl_target_reached)
+        self.assertTrue(self.main.selecionar_grandeza("HP007"))
+        self.assertEqual(self.main.dose_channel, "HP007")
+        self.main.ids.bl_repetition_input.text = "2"
+
+        hp007_ids = []
+        for counts in (1811, 1822):
+            self.main.botao_leitura()
+            hp007_ids.append(self.main.current_measurement_id)
+            self.main.processar_frame(f"#L1%A{counts}")
+            self.main.processar_frame("#L1%E45")
+            self.main.f_fechar_log = True
+            self.main.processar_frame("#L1%D471")
+            self.assertEqual(self.main.dose_channel, "HP007")
+
+        session_id = self.main.active_test_session_id
+        readings = self.database.get_baseline_session_measurements(session_id)
+        self.assertEqual(len(readings), 5)
+        for record in readings:
+            self.assertEqual(record["reading_type"], "BACKGROUND")
+            self.assertEqual(record["dose_msv"], 0)
+            self.assertEqual(record["ecc_applied"], 1)
+            self.assertEqual(record["rcf_applied"], 1)
+            self.assertEqual(record["baseline_applied"], 0)
+        before_selection = self.database.get_dosimeter("0123456789")
+        self.assertEqual(before_selection["bl_hp10"], 100)
+        self.assertEqual(before_selection["bl_hp007"], 200)
         self.assertIsNone(self.database.get_latest_background("0123456789"))
 
-        self.main.botao_leitura()
-        hp007_measurement_id = self.main.current_measurement_id
-        self.main.processar_frame("#L1%A1811")
-        self.main.processar_frame("#L1%E45")
-        self.main.f_fechar_log = True
-        self.main.processar_frame("#L1%D471")
-
-        hp007 = self.database.get_measurement(hp007_measurement_id)
-        self.assertEqual(hp007["reading_type"], "BACKGROUND")
-        self.assertEqual(hp007["dose_channel"], "HP007")
-        background = self.database.get_latest_background("0123456789")
-        self.assertEqual(background["hp10_measurement_id"], hp10_measurement_id)
-        self.assertEqual(
-            background["hp007_measurement_id"], hp007_measurement_id
-        )
-        self.assertEqual(background["hp10_bg"], hp10["dose_msv"])
-        self.assertEqual(background["hp007_bg"], hp007["dose_msv"])
+        self.assertTrue(self.main.abrir_selecao_bl())
+        self.assertIsNotNone(self.main.bl_selection_popup)
+        self.main._selecionar_leitura_bl("HP10", hp10_ids[1], "down")
+        self.main._selecionar_leitura_bl("HP007", hp007_ids[0], "down")
+        background = self.main.aplicar_selecao_bl()
+        self.assertEqual(background["hp10_counts"], 1744)
+        self.assertEqual(background["hp007_counts"], 1811)
+        dosimeter = self.database.get_dosimeter("0123456789")
+        self.assertEqual(dosimeter["bl_hp10"], 1744)
+        self.assertEqual(dosimeter["bl_hp007"], 1811)
+        self.assertFalse(self.main.baseline_mode_active)
         self.assertEqual(self.main.reading_type, "PERSONAL_DOSE")
+        self.assertEqual(self.main.ids.bl_repetition_controls.opacity, 0)
+        self.assertTrue(self.main.ids.bl_repetition_controls.disabled)
+
+    def test_056_automatic_bl_mode_applies_latest_channel_readings(self):
+        self.assertEqual(self.main.alternar_modo_bl(), "AUTOMATICO")
+        mode_button = self.root.get_screen("parametros").ids.bl_mode_button
+        self.assertIn("Automático", mode_button.text)
+        self.main.bl_update_mode = "MANUAL"
+        self.assertEqual(self.main.carregar_configuracoes(), "AUTOMATICO")
+
+        self.main.selecionar_modo("DOSIMETER_ID")
+        self.main.serial_connection = FakeSerial()
+        self.main.botao_apagar()
+        self.main.ids.bl_repetition_input.text = "2"
+        self.main.ids.reader_spinner.text = "3001A01"
+        self.main.ids.dosimeter_id_input.text = "0123456789"
+        self.assertTrue(self.main.confirmar_codigo_dosimetro())
+
+        for counts in (1733, 1744):
+            self.main.botao_leitura()
+            self.main.processar_frame(f"#L1%A{counts}")
+            self.main.processar_frame("#L1%E45")
+            self.main.f_fechar_log = True
+            self.main.processar_frame("#L1%D471")
+
+        self.assertTrue(self.main.selecionar_grandeza("HP007"))
+        self.main.ids.bl_repetition_input.text = "2"
+        for counts in (1811, 1822):
+            self.main.botao_leitura()
+            self.main.processar_frame(f"#L1%A{counts}")
+            self.main.processar_frame("#L1%E45")
+            self.main.f_fechar_log = True
+            self.main.processar_frame("#L1%D471")
+
+        self.main.botao_apagar()
+        dosimeter = self.database.get_dosimeter("0123456789")
+        self.assertEqual(dosimeter["bl_hp10"], 1744)
+        self.assertEqual(dosimeter["bl_hp007"], 1822)
+        background = self.database.get_latest_background("0123456789")
+        self.assertEqual(background["hp10_counts"], 1744)
+        self.assertEqual(background["hp007_counts"], 1822)
+        self.assertFalse(self.main.baseline_mode_active)
+        self.assertIsNone(self.main.bl_selection_popup)
 
     def test_06_stop_marks_measurement_as_interrupted(self):
         self.main.selecionar_modo("MANUAL")

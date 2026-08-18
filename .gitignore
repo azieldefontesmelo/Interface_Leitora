@@ -28,3 +28,9 @@ Interface_Leitora/assets/database/*.sqlite3-shm
 Interface_Leitora/assets/database/*.sqlite3-wal
 Interface_Leitora/assets/backups/*.sqlite3
 Interface_Leitora/assets/exports/*.csv
+
+# Artefatos locais de compilação
+Interface_Leitora/build/
+Interface_Leitora/dist/
+Interface_Leitora/tests/__pycache__/
+.pytest_cache/

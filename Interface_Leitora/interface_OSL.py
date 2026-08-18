@@ -1,3 +1,4 @@
+import json
 import sqlite3
 import tempfile
 import traceback
@@ -17,6 +18,7 @@ from kivy.core.window import Window
 from kivy.lang import Builder
 from kivy.properties import BooleanProperty, NumericProperty, StringProperty
 from kivy.uix.button import Button
+from kivy.uix.togglebutton import ToggleButton
 from kivy.uix.screenmanager import ScreenManager
 from kivy.uix.screenmanager import Screen
 from kivy.uix.popup import Popup
@@ -26,13 +28,21 @@ from kivy.uix.gridlayout import GridLayout
 from kivy.uix.filechooser import FileChooserListView
 from kivy.uix.image import Image
 from kivy.uix.textinput import TextInput
+from kivy.uix.scrollview import ScrollView
 from kivy.uix.widget import Widget
 from kivy.graphics import Color, Line, Rectangle
 from kivy.uix.treeview import TreeView, TreeViewLabel, TreeViewNode
 
+from app_paths import (
+    USER_ASSETS_DIR,
+    USER_DATA_DIR,
+    ensure_user_data,
+    resource_path,
+)
 from conversor import escrever_csv
 from database import Database
 from measurement_workflow import (
+    append_filename_observation,
     calculate_dose,
     dosimeter_filename,
     parse_number,
@@ -40,15 +50,6 @@ from measurement_workflow import (
     scanner_text,
 )
 from Plot_grafico import gerar_grafico
-import sys
-
-def resource_path(relative_path):
-    try:
-        base_path = Path(sys._MEIPASS)
-    except AttributeError:
-        base_path = Path(__file__).resolve().parent
-
-    return str(base_path / relative_path)
 
 
 NomeArquivoBL = BoxLayout(orientation="vertical")
@@ -71,12 +72,10 @@ btn.bind(on_release=popupNomeArquivo.dismiss)
 BAUD_RATE = 115200
 PORTAS_SERIAL = []
 
-APPLICATION_DIR = Path(
-    getattr(sys, "_MEIPASS", Path(__file__).resolve().parent)
-)
-ASSETS_DIR = APPLICATION_DIR / "assets"
+ASSETS_DIR = USER_ASSETS_DIR
 TESTES_DIR = ASSETS_DIR / "testes"
 LOG_SERIAL_DIR = ASSETS_DIR / "log"
+SETTINGS_PATH = USER_DATA_DIR / "configuracoes.json"
 
 COMANDOS_SUDO = {
     "leitura": "#S1%SC1001&",
@@ -645,13 +644,21 @@ class TelaPrincipalLeitora(Screen):
     )
     start_allowed = BooleanProperty(False)
     loaded_ecc = StringProperty("—")
-    loaded_bc = StringProperty("—")
+    loaded_bl = StringProperty("—")
     loaded_rcf = StringProperty("—")
+    automatic_base_file_name = StringProperty("—")
     automatic_file_name = StringProperty("—")
     acquisition_active = BooleanProperty(False)
     test_session_active = BooleanProperty(False)
     hp10_complete = BooleanProperty(False)
     hp007_complete = BooleanProperty(False)
+    baseline_mode_active = BooleanProperty(False)
+    bl_update_mode = StringProperty("MANUAL")
+    bl_hp10_count = NumericProperty(0)
+    bl_hp007_count = NumericProperty(0)
+    bl_hp10_target = NumericProperty(1)
+    bl_hp007_target = NumericProperty(1)
+    bl_target_reached = BooleanProperty(False)
 
     soma = 0
     contador = 0.1
@@ -695,6 +702,10 @@ class TelaPrincipalLeitora(Screen):
         self.active_test_session_id = None
         self.active_test_dosimeter_id = None
         self.active_test_reading_type = None
+        self.bl_selection_popup = None
+        self._bl_apply_button = None
+        self._bl_selection_summary = None
+        self.bl_selected_measurements = {"HP10": None, "HP007": None}
         Clock.schedule_once(self.atualizar_portas_serial, 0)
         Clock.schedule_once(self.atualizar_leitoras_cadastradas, 0)
         # O tamanho do conteúdo do ScrollView só fica definitivo após o
@@ -726,6 +737,11 @@ class TelaPrincipalLeitora(Screen):
                 "Finalize ou interrompa a leitura antes de trocar o modo."
             )
             return
+        if self.baseline_mode_active and normalized_mode != self.test_mode:
+            self.atualizar_status(
+                "Finalize ou cancele o modo BL antes de trocar o modo."
+            )
+            return
         if self.test_session_active:
             self.atualizar_status(
                 "Conclua Hp(10) e Hp(0,07) antes de trocar o modo."
@@ -733,6 +749,11 @@ class TelaPrincipalLeitora(Screen):
             return
         self.test_mode = normalized_mode
         self.ids.mode_manager.current = self.test_mode
+        manual_active = normalized_mode == "MANUAL"
+        self.ids.manual_panel.opacity = 1 if manual_active else 0
+        self.ids.manual_panel.disabled = not manual_active
+        self.ids.dosimeter_panel.opacity = 0 if manual_active else 1
+        self.ids.dosimeter_panel.disabled = manual_active
         if normalized_mode == "MANUAL":
             self.reading_type = "PERSONAL_DOSE"
         self.start_allowed = normalized_mode == "MANUAL"
@@ -750,17 +771,152 @@ class TelaPrincipalLeitora(Screen):
             )
             return
         if self.test_mode == "DOSIMETER_ID":
+            if self.baseline_mode_active:
+                if self.bl_update_mode == "AUTOMATICO":
+                    self.aplicar_ultimas_leituras_bl()
+                else:
+                    self.abrir_selecao_bl()
+                return
             if self.test_session_active:
                 self.atualizar_status(
                     "Conclua o teste atual antes de realizar outro zeramento."
                 )
                 return
+            self._resetar_estado_bl()
+            self.baseline_mode_active = True
             self.reading_type = "BACKGROUND"
+            self.dosimeter_status = (
+                "MODO BL ATIVO • escolha a grandeza e a quantidade de leituras"
+            )
             self.atualizar_status(
-                "Zeramento iniciado; Hp(10) e Hp(0,07) serão Linha de Base."
+                "Zeramento iniciado; modo BL ativo sem troca automática de grandeza."
             )
             self._atualizar_parametros_grandeza()
         self.enviar_comando_sudo("zerar")
+
+    def carregar_configuracoes(self):
+        """Load user preferences without storing them in the database."""
+        mode = "MANUAL"
+        try:
+            if SETTINGS_PATH.is_file():
+                settings = json.loads(SETTINGS_PATH.read_text(encoding="utf-8"))
+                saved_mode = str(settings.get("bl_update_mode", "")).upper()
+                if saved_mode in ("AUTOMATICO", "MANUAL"):
+                    mode = saved_mode
+        except (AttributeError, OSError, TypeError, ValueError, json.JSONDecodeError):
+            mode = "MANUAL"
+        self.bl_update_mode = mode
+        self._sincronizar_botao_modo_bl()
+        return mode
+
+    def _salvar_configuracoes(self):
+        settings = {}
+        try:
+            if SETTINGS_PATH.is_file():
+                loaded = json.loads(SETTINGS_PATH.read_text(encoding="utf-8"))
+                if isinstance(loaded, dict):
+                    settings.update(loaded)
+        except (OSError, TypeError, ValueError, json.JSONDecodeError):
+            pass
+        settings["bl_update_mode"] = self.bl_update_mode
+        SETTINGS_PATH.parent.mkdir(parents=True, exist_ok=True)
+        temporary_path = SETTINGS_PATH.with_suffix(".tmp")
+        temporary_path.write_text(
+            json.dumps(settings, ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+        )
+        temporary_path.replace(SETTINGS_PATH)
+
+    def _sincronizar_botao_modo_bl(self):
+        try:
+            button = self.manager.get_screen("parametros").ids.bl_mode_button
+        except (AttributeError, KeyError):
+            return
+        automatic = self.bl_update_mode == "AUTOMATICO"
+        button.text = (
+            "Modo BL: Automático — usar a última leitura"
+            if automatic
+            else "Modo BL: Manual — escolher a leitura ao finalizar"
+        )
+        button.background_color = (
+            (0.08, 0.55, 0.95, 1)
+            if automatic
+            else (0.36, 0.36, 0.36, 1)
+        )
+
+    def alternar_modo_bl(self):
+        self.bl_update_mode = (
+            "MANUAL" if self.bl_update_mode == "AUTOMATICO" else "AUTOMATICO"
+        )
+        self._sincronizar_botao_modo_bl()
+        try:
+            self._salvar_configuracoes()
+            persistence = "Configuração salva."
+        except OSError as error:
+            persistence = f"Não foi possível salvar a preferência: {error}"
+        behavior = (
+            "a última leitura de cada grandeza será aplicada ao finalizar."
+            if self.bl_update_mode == "AUTOMATICO"
+            else "o operador escolherá as leituras ao finalizar."
+        )
+        display_mode = (
+            "automático" if self.bl_update_mode == "AUTOMATICO" else "manual"
+        )
+        self.atualizar_status(
+            f"Modo BL {display_mode}: {behavior} {persistence}"
+        )
+        return self.bl_update_mode
+
+    def _resetar_estado_bl(self):
+        self.bl_hp10_count = 0
+        self.bl_hp007_count = 0
+        self.bl_hp10_target = 1
+        self.bl_hp007_target = 1
+        self.bl_target_reached = False
+        self.bl_selected_measurements = {"HP10": None, "HP007": None}
+        try:
+            self.ids.bl_repetition_input.text = "1"
+        except KeyError:
+            pass
+
+    def definir_repeticoes_bl(self, value):
+        if not self.baseline_mode_active:
+            return
+        text = str(value).strip()
+        if not text:
+            return
+        try:
+            target = int(text)
+        except ValueError:
+            return
+        target = min(max(target, 1), 99)
+        if self.dose_channel == "HP007":
+            self.bl_hp007_target = target
+        else:
+            self.bl_hp10_target = target
+        self._atualizar_meta_bl()
+
+    def _contagem_bl_atual(self):
+        return (
+            int(self.bl_hp007_count)
+            if self.dose_channel == "HP007"
+            else int(self.bl_hp10_count)
+        )
+
+    def _meta_bl_atual(self):
+        return (
+            int(self.bl_hp007_target)
+            if self.dose_channel == "HP007"
+            else int(self.bl_hp10_target)
+        )
+
+    def _atualizar_meta_bl(self):
+        if not self.baseline_mode_active:
+            self.bl_target_reached = False
+            return
+        self.bl_target_reached = (
+            self._contagem_bl_atual() >= self._meta_bl_atual()
+        )
 
     def agendar_foco_dosimetro(self, selecionar=True):
 
@@ -830,11 +986,18 @@ class TelaPrincipalLeitora(Screen):
         self.validated_reader = reader
         self.loaded_rcf = self._formatar_coeficiente(reader["rcf"])
         self._atualizar_parametros_grandeza()
-        self.dosimeter_status = (
-            f"Dosímetro válido • leitora {reader['reader_id']} • "
-            f"{self._nome_grandeza(self.dose_channel)} selecionado • "
-            "pressione Start"
-        )
+        if self.baseline_mode_active:
+            self.dosimeter_status = (
+                f"MODO BL ATIVO • dosímetro válido • "
+                f"{self._nome_grandeza(self.dose_channel)} • "
+                f"{self._contagem_bl_atual()}/{self._meta_bl_atual()} leituras"
+            )
+        else:
+            self.dosimeter_status = (
+                f"Dosímetro válido • leitora {reader['reader_id']} • "
+                f"{self._nome_grandeza(self.dose_channel)} selecionado • "
+                "pressione Start"
+            )
         self.start_allowed = True
         self.agendar_foco_dosimetro()
         return True
@@ -861,6 +1024,24 @@ class TelaPrincipalLeitora(Screen):
                 "Finalize a aquisição atual antes de trocar a grandeza."
             )
             return False
+        if self.baseline_mode_active:
+            self.dose_channel = normalized
+            target = (
+                self.bl_hp007_target
+                if normalized == "HP007"
+                else self.bl_hp10_target
+            )
+            try:
+                self.ids.bl_repetition_input.text = str(int(target))
+            except KeyError:
+                pass
+            self._atualizar_meta_bl()
+            self._atualizar_parametros_grandeza()
+            self.dosimeter_status = (
+                f"MODO BL ATIVO • {self._nome_grandeza(normalized)} • "
+                f"{self._contagem_bl_atual()}/{self._meta_bl_atual()} leituras"
+            )
+            return True
         if self.test_session_active and normalized != self.dose_channel:
             self.atualizar_status(
                 f"Conclua {self._nome_grandeza(self.dose_channel)} antes de "
@@ -889,17 +1070,32 @@ class TelaPrincipalLeitora(Screen):
             return
         if self.dose_channel == "HP007":
             ecc = dosimeter["ecc_hp007"]
-            baseline = dosimeter["bc_hp007"]
+            baseline = dosimeter["bl_hp007"]
         else:
             ecc = dosimeter["ecc_hp10"]
-            baseline = dosimeter["bc_hp10"]
+            baseline = dosimeter["bl_hp10"]
         self.loaded_ecc = self._formatar_coeficiente(ecc)
-        self.loaded_bc = self._formatar_coeficiente(baseline)
-        self.automatic_file_name = dosimeter_filename(
+        self.loaded_bl = self._formatar_coeficiente(baseline)
+        self.automatic_base_file_name = dosimeter_filename(
             dosimeter["dosimeter_id"],
             dose_channel=self.dose_channel,
             reading_type=self.reading_type,
         )
+        self.atualizar_observacao_arquivo()
+
+    def atualizar_observacao_arquivo(self, _value=None):
+        """Refresh the generated filename with the optional observation."""
+        base_name = self.automatic_base_file_name
+        if base_name in ("", "—"):
+            return
+        try:
+            observation = self.ids.arquivo_observacao_input.text
+            self.automatic_file_name = append_filename_observation(
+                base_name,
+                observation,
+            )
+        except (KeyError, ValueError):
+            self.automatic_file_name = base_name
 
     def atualizar_leitoras_cadastradas(self, *_args):
         try:
@@ -944,10 +1140,15 @@ class TelaPrincipalLeitora(Screen):
         self.validated_dosimeter = None
         self.validated_reader = None
         self.loaded_ecc = "—"
-        self.loaded_bc = "—"
+        self.loaded_bl = "—"
         self.loaded_rcf = "—"
+        self.automatic_base_file_name = "—"
         if not preserve_filename:
             self.automatic_file_name = "—"
+        try:
+            self.ids.arquivo_observacao_input.text = ""
+        except KeyError:
+            pass
         self.dosimeter_status = message
         self.start_allowed = False
 
@@ -1004,6 +1205,14 @@ class TelaPrincipalLeitora(Screen):
             if not self.confirmar_codigo_dosimetro():
                 raise ValueError(self.dosimeter_status)
         dosimeter_id = self.validated_dosimeter["dosimeter_id"]
+        if self.baseline_mode_active and (
+            self._contagem_bl_atual() >= self._meta_bl_atual()
+        ):
+            raise ValueError(
+                f"A meta de {self._meta_bl_atual()} leitura(s) de "
+                f"{self._nome_grandeza(self.dose_channel)} foi atingida. "
+                "Aumente a quantidade, escolha outra grandeza ou finalize o modo BL."
+            )
         if self.test_session_active and (
             dosimeter_id != self.active_test_dosimeter_id
             or self.reading_type != self.active_test_reading_type
@@ -1018,12 +1227,21 @@ class TelaPrincipalLeitora(Screen):
             self.test_session_active = True
         if self.dose_channel == "HP007":
             ecc = float(self.validated_dosimeter["ecc_hp007"])
-            baseline = float(self.validated_dosimeter["bc_hp007"])
+            baseline = float(self.validated_dosimeter["bl_hp007"])
         else:
             ecc = float(self.validated_dosimeter["ecc_hp10"])
-            baseline = float(self.validated_dosimeter["bc_hp10"])
+            baseline = float(self.validated_dosimeter["bl_hp10"])
+        rcf = float(self.validated_reader["rcf"])
+        if self.reading_type == "BACKGROUND":
+            ecc = 1.0
+            rcf = 1.0
+            baseline = 0.0
         self._atualizar_parametros_grandeza()
-        file_name = safe_test_filename(self.automatic_file_name)
+        file_name = append_filename_observation(
+            self.automatic_base_file_name,
+            self.ids.arquivo_observacao_input.text,
+        )
+        self.automatic_file_name = file_name
         return {
             "test_mode": "DOSIMETER_ID",
             "reading_type": self.reading_type,
@@ -1033,7 +1251,7 @@ class TelaPrincipalLeitora(Screen):
             "dosimeter_id": dosimeter_id,
             "file_name": file_name,
             "ecc": ecc,
-            "rcf": float(self.validated_reader["rcf"]),
+            "rcf": rcf,
             "fang": fang,
             "fenerg": fenerg,
             "baseline": baseline,
@@ -1043,6 +1261,22 @@ class TelaPrincipalLeitora(Screen):
     def func_botao_log(self, context=None):
         if not self.log_arquivo:
             self.iniciar_log(context)
+
+    @staticmethod
+    def _nome_arquivo_disponivel(directory, filename):
+        """Keep second-level filenames short while avoiding same-second collisions."""
+        candidate = directory / filename
+        if not candidate.exists():
+            return filename
+        stem = Path(filename).stem
+        suffix = Path(filename).suffix
+        for sequence in range(2, 1000):
+            alternative = safe_test_filename(
+                f"{stem}-{sequence}{suffix}"
+            )
+            if not (directory / alternative).exists():
+                return alternative
+        raise ValueError("Não foi possível gerar um nome de arquivo disponível")
 
     def iniciar_log(self, context=None):
         try:
@@ -1055,6 +1289,11 @@ class TelaPrincipalLeitora(Screen):
         data_atual = datetime.now()
         testes_dia_dir = TESTES_DIR / data_atual.strftime("%Y/%m/%d")
         testes_dia_dir.mkdir(parents=True, exist_ok=True)
+        nome_arquivo = self._nome_arquivo_disponivel(
+            testes_dia_dir,
+            nome_arquivo,
+        )
+        self.automatic_file_name = nome_arquivo
         self.applied_parameters = dict(context)
 
         try:
@@ -1097,7 +1336,11 @@ class TelaPrincipalLeitora(Screen):
                 data_atual.strftime("%d/%m/%Y %H:%M:%S"),
                 nome_arquivo,
                 "Integral:",
-                "Dose mSv:",
+                (
+                    "Contagens:"
+                    if context.get("reading_type") == "BACKGROUND"
+                    else "Dose mSv:"
+                ),
                 "Time;Count;Current;Light",
             ):
                 self.salvar_log(f"{linha} \n")
@@ -1191,17 +1434,25 @@ class TelaPrincipalLeitora(Screen):
             linhas_string.append("\n")
 
 
-        dose = self.calcular_dose()
+        baseline_reading = bool(
+            self.applied_parameters
+            and self.applied_parameters.get("reading_type") == "BACKGROUND"
+        )
+        result = float(self.soma) if baseline_reading else self.calcular_dose()
         linhas[2] = f"Soma: {self.soma}\n"
-        linhas[3] = f"Dose: {self.formatar_dose(dose)}\n"
+        result_label = "Contagens" if baseline_reading else "Dose"
+        formatted_result = (
+            f"{result:.10g}" if baseline_reading else self.formatar_dose(result)
+        )
+        linhas[3] = f"{result_label}: {formatted_result}\n"
 
         linhas_string[2] = f"Soma: {self.soma}"
-        linhas_string[3] = f"Dose: {self.formatar_dose(dose)}"
+        linhas_string[3] = f"{result_label}: {formatted_result}"
 
-        self.ids.label_dose.text = self.formatar_dose(dose)
+        self.ids.label_dose.text = formatted_result
 
         self.string_log = "\n".join(linhas_string)
-        return dose
+        return result
 
         #with open(nome_arquivo, "w", encoding="utf-8") as arquivo:
         #    arquivo.writelines(linhas)
@@ -1219,21 +1470,32 @@ class TelaPrincipalLeitora(Screen):
             fenerg=context["fenerg"],
         )
 
-    def _finalizar_medicao(self, status, dose, notes=None):
+    def _finalizar_medicao(self, status, result, notes=None):
         if self.current_measurement_id is None:
             return False
+        baseline_reading = bool(
+            self.applied_parameters
+            and self.applied_parameters.get("reading_type") == "BACKGROUND"
+        )
         self.obter_database().update_measurement(
             self.current_measurement_id,
             count_01s=self.valor_count,
             current_ma=self.valor_current,
             light_mv=self.valor_light,
             raw_signal=self.soma,
-            dose_msv=dose,
+            dose_msv=0.0 if baseline_reading else result,
             file_path=str(self.caminho_arquivo),
             status=status,
             notes=notes,
         )
         if status == "CONCLUIDO":
+            if self.baseline_mode_active and baseline_reading:
+                if self.applied_parameters.get("dose_channel") == "HP007":
+                    self.bl_hp007_count += 1
+                else:
+                    self.bl_hp10_count += 1
+                self._atualizar_meta_bl()
+                return False
             history = self.obter_database().sync_measurement_history(
                 self.current_measurement_id
             )
@@ -1247,6 +1509,22 @@ class TelaPrincipalLeitora(Screen):
 
     def _preparar_proxima_grandeza(self, completed_channel, *, status):
         if self.test_mode != "DOSIMETER_ID" or not self.test_session_active:
+            return
+        if self.baseline_mode_active:
+            self._atualizar_meta_bl()
+            if status == "CONCLUIDO":
+                self.dosimeter_status = (
+                    f"MODO BL ATIVO • {self._nome_grandeza(completed_channel)} "
+                    f"{self._contagem_bl_atual()}/{self._meta_bl_atual()} • "
+                    "repita, escolha outra grandeza ou finalize"
+                )
+            else:
+                self.dosimeter_status = (
+                    f"Leitura BL de {self._nome_grandeza(self.dose_channel)} "
+                    "não concluída • pressione Start para repetir"
+                )
+            self.start_allowed = True
+            self._atualizar_parametros_grandeza()
             return
         if status == "CONCLUIDO" and completed_channel == "HP10":
             self.hp10_complete = True
@@ -1270,6 +1548,243 @@ class TelaPrincipalLeitora(Screen):
             f"faça a leitura de {self._nome_grandeza(missing_channel)}"
         )
         self.start_allowed = True
+
+    def abrir_selecao_bl(self):
+        if not self.baseline_mode_active:
+            return False
+        if self.acquisition_active or self.log_arquivo:
+            self.atualizar_status(
+                "Finalize ou interrompa a leitura atual antes de encerrar o modo BL."
+            )
+            return False
+        records = []
+        if self.active_test_session_id:
+            try:
+                records = self.obter_database().get_baseline_session_measurements(
+                    self.active_test_session_id
+                )
+            except (sqlite3.Error, TypeError, ValueError) as error:
+                self.atualizar_status(f"Erro ao carregar leituras BL: {error}")
+                return False
+
+        self.bl_selected_measurements = {"HP10": None, "HP007": None}
+        content = BoxLayout(orientation="vertical", spacing=8, padding=10)
+        content.add_widget(
+            Label(
+                text=(
+                    "Escolha no máximo uma leitura por grandeza. "
+                    "Somente as escolhidas atualizarão o dosímetro."
+                    if records
+                    else "Nenhuma leitura BL concluída nesta sessão."
+                ),
+                size_hint_y=None,
+                height="48dp",
+                halign="left",
+                valign="middle",
+                text_size=(760, None),
+            )
+        )
+
+        scroll = ScrollView()
+        rows = BoxLayout(
+            orientation="vertical",
+            spacing=5,
+            size_hint_y=None,
+        )
+        rows.bind(minimum_height=rows.setter("height"))
+        sequence = {"HP10": 0, "HP007": 0}
+        for record in records:
+            channel = record["dose_channel"]
+            sequence[channel] += 1
+            button = ToggleButton(
+                text=(
+                    f"{self._nome_grandeza(channel)} • leitura {sequence[channel]}"
+                    f" • {float(record['raw_signal']):.10g} contagens"
+                    f" • {record['measured_at']} • {record['file_name']}"
+                ),
+                group=f"bl-{self.active_test_session_id}-{channel}",
+                allow_no_selection=True,
+                size_hint_y=None,
+                height="46dp",
+                halign="left",
+                valign="middle",
+            )
+            button.bind(
+                state=lambda _button, state, selected_channel=channel,
+                measurement_id=record["id"]: self._selecionar_leitura_bl(
+                    selected_channel,
+                    measurement_id,
+                    state,
+                )
+            )
+            rows.add_widget(button)
+        scroll.add_widget(rows)
+        content.add_widget(scroll)
+
+        self._bl_selection_summary = Label(
+            text="Hp(10): não alterar   •   Hp(0,07): não alterar",
+            size_hint_y=None,
+            height="34dp",
+        )
+        content.add_widget(self._bl_selection_summary)
+
+        actions = BoxLayout(size_hint_y=None, height="44dp", spacing=8)
+        continue_button = Button(text="Continuar leituras")
+        discard_button = Button(text="Encerrar sem atualizar")
+        apply_button = Button(
+            text="Aplicar leituras selecionadas",
+            disabled=True,
+        )
+        actions.add_widget(continue_button)
+        actions.add_widget(discard_button)
+        actions.add_widget(apply_button)
+        content.add_widget(actions)
+
+        popup = Popup(
+            title="Finalizar modo BL",
+            content=content,
+            size_hint=(0.92, 0.86),
+            auto_dismiss=False,
+        )
+        self.bl_selection_popup = popup
+        self._bl_apply_button = apply_button
+        continue_button.bind(on_release=popup.dismiss)
+        discard_button.bind(on_release=self.encerrar_modo_bl_sem_atualizar)
+        apply_button.bind(on_release=lambda _button: self.aplicar_selecao_bl())
+        popup.open()
+        return True
+
+    def aplicar_ultimas_leituras_bl(self):
+        """Apply the latest completed count for each channel in the BL session."""
+        if not self.baseline_mode_active:
+            return None
+        if self.acquisition_active or self.log_arquivo:
+            self.atualizar_status(
+                "Finalize ou interrompa a leitura atual antes de encerrar o modo BL."
+            )
+            return None
+        if not self.active_test_session_id:
+            self.atualizar_status(
+                "Nenhuma sessão BL com leituras concluídas para atualizar."
+            )
+            return None
+        try:
+            records = self.obter_database().get_baseline_session_measurements(
+                self.active_test_session_id
+            )
+        except (sqlite3.Error, TypeError, ValueError) as error:
+            self.atualizar_status(f"Erro ao carregar leituras BL: {error}")
+            return None
+
+        latest_ids = {"HP10": None, "HP007": None}
+        for record in records:
+            latest_ids[record["dose_channel"]] = int(record["id"])
+        if all(measurement_id is None for measurement_id in latest_ids.values()):
+            self.atualizar_status(
+                "Nenhuma leitura BL concluída; o modo BL permanece ativo."
+            )
+            return None
+        return self.aplicar_selecao_bl(
+            hp10_measurement_id=latest_ids["HP10"],
+            hp007_measurement_id=latest_ids["HP007"],
+        )
+
+    def _selecionar_leitura_bl(self, channel, measurement_id, state):
+        if state == "down":
+            self.bl_selected_measurements[channel] = int(measurement_id)
+        elif self.bl_selected_measurements.get(channel) == int(measurement_id):
+            self.bl_selected_measurements[channel] = None
+        try:
+            hp10 = self.bl_selected_measurements["HP10"]
+            hp007 = self.bl_selected_measurements["HP007"]
+            self._bl_apply_button.disabled = hp10 is None and hp007 is None
+            self._bl_selection_summary.text = (
+                f"Hp(10): {'leitura ID ' + str(hp10) if hp10 else 'não alterar'}"
+                f"   •   Hp(0,07): "
+                f"{'leitura ID ' + str(hp007) if hp007 else 'não alterar'}"
+            )
+        except AttributeError:
+            pass
+
+    def aplicar_selecao_bl(
+        self,
+        hp10_measurement_id=None,
+        hp007_measurement_id=None,
+    ):
+        if not self.baseline_mode_active or not self.active_test_session_id:
+            self.atualizar_status("Não existe uma sessão BL ativa para aplicar.")
+            return None
+        hp10_id = (
+            self.bl_selected_measurements.get("HP10")
+            if hp10_measurement_id is None
+            else hp10_measurement_id
+        )
+        hp007_id = (
+            self.bl_selected_measurements.get("HP007")
+            if hp007_measurement_id is None
+            else hp007_measurement_id
+        )
+        if hp10_id is None and hp007_id is None:
+            self.atualizar_status("Selecione ao menos uma leitura para aplicar.")
+            return None
+        try:
+            result = self.obter_database().apply_baseline_selection(
+                self.active_test_session_id,
+                self.active_test_dosimeter_id,
+                hp10_measurement_id=hp10_id,
+                hp007_measurement_id=hp007_id,
+            )
+        except (sqlite3.Error, TypeError, ValueError) as error:
+            self.atualizar_status(f"Erro ao aplicar BL: {error}")
+            return None
+        selected_values = []
+        if result.get("hp10_counts") is not None:
+            selected_values.append(
+                f"Hp(10)={float(result['hp10_counts']):.10g}"
+            )
+        if result.get("hp007_counts") is not None:
+            selected_values.append(
+                f"Hp(0,07)={float(result['hp007_counts']):.10g}"
+            )
+        self._encerrar_modo_bl(
+            "BL atualizado no dosímetro: " + ", ".join(selected_values)
+        )
+        return result
+
+    def encerrar_modo_bl_sem_atualizar(self, _button=None):
+        if not self.baseline_mode_active:
+            return False
+        self._encerrar_modo_bl(
+            "Modo BL encerrado sem alterar o cadastro do dosímetro."
+        )
+        return True
+
+    def _encerrar_modo_bl(self, message):
+        try:
+            if self.bl_selection_popup:
+                self.bl_selection_popup.dismiss()
+        except AttributeError:
+            pass
+        self.bl_selection_popup = None
+        self._bl_apply_button = None
+        self.baseline_mode_active = False
+        self.reading_type = "PERSONAL_DOSE"
+        self.test_session_active = False
+        self.active_test_session_id = None
+        self.active_test_dosimeter_id = None
+        self.active_test_reading_type = None
+        self.hp10_complete = False
+        self.hp007_complete = False
+        self.dose_channel = "HP10"
+        self._resetar_estado_bl()
+        try:
+            self.ids.dosimeter_id_input.text = ""
+            self.ids.LabelDose.text = "Dose (mSv)"
+        except KeyError:
+            pass
+        self._invalidar_dosimetro(message)
+        self.atualizar_status(message)
+        self.agendar_foco_dosimetro(selecionar=False)
 
     def _atualizar_medicao_com_erro(self, notes):
         if self.current_measurement_id is None:
@@ -1554,7 +2069,11 @@ class TelaPrincipalLeitora(Screen):
             lbl_erro.text = "Connect to OSL System!"
             popupNomeArquivo.open()
         else:
-            self.ids.LabelDose.text = "Dose (mSv)"
+            self.ids.LabelDose.text = (
+                "Contagens"
+                if context.get("reading_type") == "BACKGROUND"
+                else "Dose (mSv)"
+            )
             self.func_botao_log(context)
 
     def botao_stop(self):
@@ -1709,6 +2228,23 @@ class TelaBancoDados(Screen):
         self._background_rows = []
         self._history_rows = []
 
+    def on_kv_post(self, base_widget):
+        focus_order = (
+            "db_dosimeter_search",
+            "db_dosimeter_id",
+            "db_dosimeter_ecc_hp10",
+            "db_dosimeter_ecc_hp007",
+            "db_dosimeter_bl_hp10",
+            "db_dosimeter_bl_hp007",
+            "db_dosimeter_begin",
+            "db_dosimeter_end",
+        )
+        for current_id, next_id in zip(
+            focus_order,
+            focus_order[1:] + focus_order[:1],
+        ):
+            self.ids[current_id].focus_next = self.ids[next_id]
+
     def obter_database(self):
         if self.database is not None:
             return self.database
@@ -1725,20 +2261,25 @@ class TelaBancoDados(Screen):
         self.pesquisar_leitoras()
         self.pesquisar_historico()
 
-    def novo_dosimetro(self):
+    def _preparar_novo_dosimetro(self, dosimeter_id=""):
         self._editing_dosimeter_id = None
-        for field_id in (
-            "db_dosimeter_id",
-            "db_dosimeter_ecc_hp10",
-            "db_dosimeter_ecc_hp007",
-            "db_dosimeter_bc_hp10",
-            "db_dosimeter_bc_hp007",
-            "db_dosimeter_begin",
-            "db_dosimeter_end",
-        ):
-            self.ids[field_id].text = ""
+        today = datetime.now().strftime("%d/%m/%Y")
+        defaults = {
+            "db_dosimeter_id": str(dosimeter_id).strip(),
+            "db_dosimeter_ecc_hp10": "1",
+            "db_dosimeter_ecc_hp007": "1",
+            "db_dosimeter_bl_hp10": "1",
+            "db_dosimeter_bl_hp007": "1",
+            "db_dosimeter_begin": today,
+            "db_dosimeter_end": "",
+        }
+        for field_id, value in defaults.items():
+            self.ids[field_id].text = value
         self.ids.db_dosimeter_id.disabled = False
         self.ids.db_dosimeter_active.active = True
+
+    def novo_dosimetro(self):
+        self._preparar_novo_dosimetro()
         self.dosimeter_message = "Novo cadastro"
 
     def salvar_dosimetro(self):
@@ -1746,8 +2287,8 @@ class TelaBancoDados(Screen):
         values = {
             "ecc_hp10": self.ids.db_dosimeter_ecc_hp10.text.replace(",", "."),
             "ecc_hp007": self.ids.db_dosimeter_ecc_hp007.text.replace(",", "."),
-            "bc_hp10": self.ids.db_dosimeter_bc_hp10.text.replace(",", "."),
-            "bc_hp007": self.ids.db_dosimeter_bc_hp007.text.replace(",", "."),
+            "bl_hp10": self.ids.db_dosimeter_bl_hp10.text.replace(",", "."),
+            "bl_hp007": self.ids.db_dosimeter_bl_hp007.text.replace(",", "."),
             "begin_date": self.ids.db_dosimeter_begin.text,
             "end_date": self.ids.db_dosimeter_end.text or None,
             "active": self.ids.db_dosimeter_active.active,
@@ -1802,6 +2343,12 @@ class TelaBancoDados(Screen):
             selection_callback=self.selecionar_dosimetro,
         )
         search_text = self.ids.db_dosimeter_search.text.strip()
+        if not rows and search_text and len(search_text) == 10 and search_text.isascii() and search_text.isdigit():
+            self._preparar_novo_dosimetro(search_text)
+            self.dosimeter_message = (
+                "Dosímetro não cadastrado; formulário preenchido com valores padrão"
+            )
+            return
         if (
             len(rows) == 1
             and search_text
@@ -1821,7 +2368,14 @@ class TelaBancoDados(Screen):
             self.dosimeter_message = f"Erro ao carregar dosímetro: {error}"
             return False
         if record is None:
-            return False
+            if len(dosimeter_id) != 10 or not dosimeter_id.isascii() or not dosimeter_id.isdigit():
+                return False
+            self._preparar_novo_dosimetro(dosimeter_id)
+            self.ids.db_dosimeter_search.text = dosimeter_id
+            self.dosimeter_message = (
+                "Dosímetro não cadastrado; formulário preenchido com valores padrão"
+            )
+            return True
         self.ids.db_dosimeter_search.text = dosimeter_id
         self.selecionar_dosimetro(record)
         return True
@@ -1832,8 +2386,8 @@ class TelaBancoDados(Screen):
         self.ids.db_dosimeter_id.disabled = False
         self.ids.db_dosimeter_ecc_hp10.text = f"{record['ecc_hp10']:.10g}"
         self.ids.db_dosimeter_ecc_hp007.text = f"{record['ecc_hp007']:.10g}"
-        self.ids.db_dosimeter_bc_hp10.text = f"{record['bc_hp10']:.10g}"
-        self.ids.db_dosimeter_bc_hp007.text = f"{record['bc_hp007']:.10g}"
+        self.ids.db_dosimeter_bl_hp10.text = f"{record['bl_hp10']:.10g}"
+        self.ids.db_dosimeter_bl_hp007.text = f"{record['bl_hp007']:.10g}"
         self.ids.db_dosimeter_begin.text = self._date_for_display(
             record["begin_date"]
         )
@@ -2123,7 +2677,7 @@ class TelaBancoDados(Screen):
     def _montar_dataframe_dosimetros(rows):
         columns = [
             "Dosímetro", "ECC Hp(10)", "ECC Hp(0,07)",
-            "BC Hp(10)", "BC Hp(0,07)",
+            "BL Hp(10)", "BL Hp(0,07)",
             "Data inicial", "Data final", "Status",
         ]
         if not rows:
@@ -2140,10 +2694,10 @@ class TelaBancoDados(Screen):
         frame["ECC Hp(0,07)"] = pd.to_numeric(frame["ecc_hp007"]).map(
             lambda value: f"{value:.10g}"
         )
-        frame["BC Hp(10)"] = pd.to_numeric(frame["bc_hp10"]).map(
+        frame["BL Hp(10)"] = pd.to_numeric(frame["bl_hp10"]).map(
             lambda value: f"{value:.10g}"
         )
-        frame["BC Hp(0,07)"] = pd.to_numeric(frame["bc_hp007"]).map(
+        frame["BL Hp(0,07)"] = pd.to_numeric(frame["bl_hp007"]).map(
             lambda value: f"{value:.10g}"
         )
         frame["Data inicial"] = pd.to_datetime(
@@ -2233,9 +2787,11 @@ class TelaBancoDados(Screen):
         hp10_column,
         hp007_column,
         status_column,
+        unit="mSv",
     ):
         columns = [
-            "Data/hora", "Dosímetro", "Hp(10) mSv", "Hp(0,07) mSv", "Status"
+            "Data/hora", "Dosímetro", f"Hp(10) {unit}",
+            f"Hp(0,07) {unit}", "Status"
         ]
         if not rows:
             return pd.DataFrame(columns=columns)
@@ -2250,11 +2806,16 @@ class TelaBancoDados(Screen):
 
         hp10 = pd.to_numeric(frame[hp10_column], errors="coerce")
         hp007 = pd.to_numeric(frame[hp007_column], errors="coerce")
-        frame["Hp(10) mSv"] = hp10.map(
-            lambda value: "—" if pd.isna(value) else f"{value:.3f}"
+        formatter = (
+            (lambda value: f"{value:.10g}")
+            if unit == "Contagens"
+            else (lambda value: f"{value:.3f}")
         )
-        frame["Hp(0,07) mSv"] = hp007.map(
-            lambda value: "—" if pd.isna(value) else f"{value:.3f}"
+        frame[f"Hp(10) {unit}"] = hp10.map(
+            lambda value: "—" if pd.isna(value) else formatter(value)
+        )
+        frame[f"Hp(0,07) {unit}"] = hp007.map(
+            lambda value: "—" if pd.isna(value) else formatter(value)
         )
         frame["Status"] = frame[status_column].astype("string")
         frame = frame.sort_values(time_column, ascending=False, kind="stable")
@@ -2351,9 +2912,10 @@ class TelaBancoDados(Screen):
         dataframe = self._montar_dataframe_historico(
             self._background_rows,
             time_column="time_bg",
-            hp10_column="hp10_bg",
-            hp007_column="hp007_bg",
+            hp10_column="hp10_counts",
+            hp007_column="hp007_counts",
             status_column="status_bg",
+            unit="Contagens",
         )
         self._renderizar_dataframe(
             container,
@@ -2442,7 +3004,7 @@ class TelaBancoDados(Screen):
             f"RCF: {record['rcf_applied']:.10g}   "
             f"Fang: {record['fang_applied']:.10g}   "
             f"Fenerg: {record['fenerg_applied']:.10g}   "
-            f"Base Line: {record['baseline_applied']:.10g}\n"
+            f"BL: {record['baseline_applied']:.10g}\n"
             f"Caminho: {record['file_path'] or '—'}\n"
             f"Observação: {record['notes'] or '—'}"
         )
@@ -2852,11 +3414,14 @@ class AplicativoInterfaceOSL(App):
     title = "OSLMeter V4.0"
 
     def build(self):
+        ensure_user_data()
         if not hasattr(self, "database") or self.database is None:
             self.database = Database()
         root = Builder.load_file(resource_path("interface_OSL.kv"))
-        root.get_screen("main").database = self.database
+        main_screen = root.get_screen("main")
+        main_screen.database = self.database
         root.get_screen("banco_dados").database = self.database
+        main_screen.carregar_configuracoes()
         return root
 
     def trocar_para_graficos(self):
