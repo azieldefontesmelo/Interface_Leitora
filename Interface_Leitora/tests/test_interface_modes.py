@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import csv
 import tempfile
 import unittest
 from datetime import datetime
@@ -275,6 +276,129 @@ class InterfaceModeTestCase(unittest.TestCase):
         self.assertEqual(len(rendered_row.children), 5)
         self.assertFalse(
             any("|" in cell.text for cell in rendered_row.children)
+        )
+
+    def test_dosimeter_csv_export_includes_latest_bl_date(self):
+        self.database.add_background(
+            "0123456789",
+            hp10_counts=1111,
+            hp007_counts=1222,
+            time_bg="2026-07-29T10:00:00Z",
+        )
+        self.database.add_background(
+            "0123456789",
+            hp10_counts=1333,
+            hp007_counts=1444,
+            time_bg="2026-07-30T11:00:00Z",
+        )
+        self.bank.ids.db_dosimeter_search.text = ""
+
+        previous_assets_dir = interface_OSL.ASSETS_DIR
+        interface_OSL.ASSETS_DIR = self.root_path / "csv_export"
+        try:
+            output = self.bank.exportar_csv_dosimetros()
+        finally:
+            interface_OSL.ASSETS_DIR = previous_assets_dir
+
+        self.assertIsNotNone(output)
+        with output.open(encoding="utf-8-sig", newline="") as file:
+            rows = list(csv.DictReader(file))
+
+        headers = list(
+            self.bank._montar_dataframe_dosimetros(
+                [],
+                incluir_ultima_leitura_bl=True,
+            ).columns
+        )
+        self.assertEqual(list(rows[0]), headers)
+        self.assertEqual(rows[0][headers[0]], "0123456789")
+        self.assertEqual(rows[0][headers[1]], "1.25")
+        self.assertEqual(rows[0][headers[2]], "1.5")
+        self.assertEqual(rows[0][headers[3]], "1333")
+        self.assertEqual(rows[0][headers[4]], "1444")
+        self.assertEqual(rows[0][headers[5]], "01/01/2025")
+        self.assertEqual(rows[0][headers[6]], "31/12/2030")
+        self.assertEqual(rows[0][headers[7]], "Ativo")
+        expected_latest = datetime.fromisoformat(
+            "2026-07-30T11:00:00+00:00"
+        ).astimezone().strftime("%d/%m/%Y %H:%M:%S")
+        self.assertEqual(rows[0][headers[8]], expected_latest)
+
+    def test_history_csv_exports_match_screen_fields_with_date_last(self):
+        self.database.add_personal_dose(
+            "0123456789",
+            hp10_dos=1.125,
+            hp007_dos=2.25,
+            time_dos="2026-07-30T11:00:00Z",
+        )
+        self.database.add_background(
+            "0123456789",
+            hp10_counts=1333,
+            hp007_counts=1444,
+            time_bg="2026-07-30T12:00:00Z",
+        )
+
+        previous_assets_dir = interface_OSL.ASSETS_DIR
+        interface_OSL.ASSETS_DIR = self.root_path / "csv_history_export"
+        try:
+            personal_output = self.bank.exportar_csv_doses_pessoais()
+            background_output = self.bank.exportar_csv_backgrounds()
+        finally:
+            interface_OSL.ASSETS_DIR = previous_assets_dir
+
+        self.assertIsNotNone(personal_output)
+        self.assertIsNotNone(background_output)
+        with personal_output.open(encoding="utf-8-sig", newline="") as file:
+            personal_rows = list(csv.DictReader(file))
+        with background_output.open(encoding="utf-8-sig", newline="") as file:
+            background_rows = list(csv.DictReader(file))
+
+        personal_screen_columns = list(
+            self.bank._montar_dataframe_historico(
+                [],
+                time_column="time_dos",
+                hp10_column="hp10_dos",
+                hp007_column="hp007_dos",
+                status_column="status_dos",
+            ).columns
+        )
+        background_screen_columns = list(
+            self.bank._montar_dataframe_historico(
+                [],
+                time_column="time_bg",
+                hp10_column="hp10_counts",
+                hp007_column="hp007_counts",
+                status_column="status_bg",
+                unit="Contagens",
+            ).columns
+        )
+        expected_personal_columns = [
+            column for column in personal_screen_columns if column != "Data/hora"
+        ] + ["Data/hora"]
+        expected_background_columns = [
+            column
+            for column in background_screen_columns
+            if column != "Data/hora"
+        ] + ["Data/hora"]
+        self.assertEqual(list(personal_rows[0]), expected_personal_columns)
+        self.assertEqual(list(background_rows[0]), expected_background_columns)
+        self.assertEqual(personal_rows[0][expected_personal_columns[0]], "0123456789")
+        self.assertEqual(personal_rows[0][expected_personal_columns[1]], "1.125")
+        self.assertEqual(personal_rows[0][expected_personal_columns[2]], "2.250")
+        self.assertEqual(background_rows[0][expected_background_columns[0]], "0123456789")
+        self.assertEqual(background_rows[0][expected_background_columns[1]], "1333")
+        self.assertEqual(background_rows[0][expected_background_columns[2]], "1444")
+        expected_personal_date = datetime.fromisoformat(
+            "2026-07-30T11:00:00+00:00"
+        ).astimezone().strftime("%d/%m/%Y %H:%M:%S")
+        expected_background_date = datetime.fromisoformat(
+            "2026-07-30T12:00:00+00:00"
+        ).astimezone().strftime("%d/%m/%Y %H:%M:%S")
+        self.assertEqual(
+            personal_rows[0][expected_personal_columns[-1]], expected_personal_date
+        )
+        self.assertEqual(
+            background_rows[0][expected_background_columns[-1]], expected_background_date
         )
 
     def test_unregistered_dosimeter_gets_defaults_and_tab_order(self):

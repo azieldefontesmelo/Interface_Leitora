@@ -71,6 +71,33 @@ class DatabaseTestCase(unittest.TestCase):
         values.update(changes)
         return self.database.add_measurement(**values)
 
+    def test_dosimeter_export_search_returns_latest_bl_reading(self):
+        self.register_valid_records()
+        self.database.add_background(
+            "0123456789",
+            hp10_counts=1111,
+            hp007_counts=1222,
+            time_bg="2026-07-29T10:00:00Z",
+        )
+        self.database.add_background(
+            "0123456789",
+            hp10_counts=1333,
+            hp007_counts=1444,
+            time_bg="2026-07-30T11:00:00Z",
+        )
+
+        rows = self.database.search_dosimeters_for_export(
+            text="0123456789",
+        )
+
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["bl_hp10"], 1333)
+        self.assertEqual(rows[0]["bl_hp007"], 1444)
+        self.assertEqual(
+            rows[0]["last_bl_read_at"],
+            "2026-07-30T11:00:00.000+00:00",
+        )
+
     def test_creates_database_and_idempotent_versioned_schema(self):
         self.assertTrue(self.db_path.is_file())
         Database(self.db_path)

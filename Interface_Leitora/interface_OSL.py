@@ -2,6 +2,7 @@ import json
 import sqlite3
 import tempfile
 import traceback
+import webbrowser
 from collections import deque
 from datetime import datetime
 from math import hypot
@@ -12,6 +13,13 @@ from uuid import uuid4
 import serial
 import serial.tools.list_ports
 import pandas as pd
+from kivy.config import Config
+
+# O estado precisa ser definido antes de o provedor SDL2 criar a janela.
+# Chamar Window.maximize() apenas antes de App.run() pode ser ignorado no
+# Windows, porque nesse momento ainda não existe uma janela nativa.
+Config.set("graphics", "window_state", "maximized")
+
 from kivy.app import App
 from kivy.clock import Clock
 from kivy.core.window import Window
@@ -39,6 +47,12 @@ from app_paths import (
     ensure_user_data,
     resource_path,
 )
+
+APP_ICON_PATH = resource_path("assets/UI/iconeOSL.ico")
+Window.icon = APP_ICON_PATH
+if Window.initialized:
+    Window.set_icon(APP_ICON_PATH)
+
 from conversor import escrever_csv
 from database import Database
 from measurement_workflow import (
@@ -71,6 +85,7 @@ btn.bind(on_release=popupNomeArquivo.dismiss)
 
 BAUD_RATE = 115200
 PORTAS_SERIAL = []
+DATABASE_PAGE_SIZE = 100
 
 ASSETS_DIR = USER_ASSETS_DIR
 TESTES_DIR = ASSETS_DIR / "testes"
@@ -2227,6 +2242,8 @@ class TelaBancoDados(Screen):
         self._personal_dose_rows = []
         self._background_rows = []
         self._history_rows = []
+        self._loaded_database_tabs = set()
+        self._pending_database_tabs = set()
 
     def on_kv_post(self, base_widget):
         focus_order = (
@@ -2255,11 +2272,61 @@ class TelaBancoDados(Screen):
         return self.database
 
     def on_pre_enter(self, *_args):
-        self.pesquisar_doses_pessoais()
-        self.pesquisar_backgrounds()
-        self.pesquisar_dosimetros()
-        self.pesquisar_leitoras()
-        self.pesquisar_historico()
+        # Do not populate every table when the screen is opened.  Some of the
+        # history tables can contain hundreds of rows, and creating one Kivy
+        # widget per cell blocks the main event loop.
+        self._loaded_database_tabs.clear()
+        self._pending_database_tabs.clear()
+        Clock.schedule_once(self._carregar_aba_atual, 0)
+
+    def carregar_aba_database(self, tab):
+        """Load a database tab only when it becomes visible."""
+        if tab is None:
+            return
+        tab_by_id = {
+            self.ids.tab_db_personal: "personal_dose",
+            self.ids.tab_db_background: "background",
+            self.ids.tab_db_dosimeters: "dosimeters",
+            self.ids.tab_db_readers: "readers",
+            self.ids.tab_db_history: "history",
+        }
+        tab_key = tab_by_id.get(tab)
+        if tab_key is None:
+            return
+        if tab_key in self._loaded_database_tabs:
+            return
+        if tab_key in self._pending_database_tabs:
+            return
+        self._pending_database_tabs.add(tab_key)
+        Clock.schedule_once(
+            lambda _dt, key=tab_key: self._carregar_aba_database(key),
+            0,
+        )
+
+    def _carregar_aba_atual(self, _dt):
+        tab = self.ids.database_tabs.current_tab
+        if tab is None:
+            # With do_default_tab=False, Kivy may not expose a current tab
+            # until the first user click.  Keep the first view useful.
+            self.pesquisar_doses_pessoais()
+            self._loaded_database_tabs.add("personal_dose")
+            return
+        self.carregar_aba_database(tab)
+
+    def _carregar_aba_database(self, tab_key):
+        self._pending_database_tabs.discard(tab_key)
+        searches = {
+            "personal_dose": self.pesquisar_doses_pessoais,
+            "background": self.pesquisar_backgrounds,
+            "dosimeters": self.pesquisar_dosimetros,
+            "readers": self.pesquisar_leitoras,
+            "history": self.pesquisar_historico,
+        }
+        search = searches.get(tab_key)
+        if search is None:
+            return
+        search()
+        self._loaded_database_tabs.add(tab_key)
 
     def _preparar_novo_dosimetro(self, dosimeter_id=""):
         self._editing_dosimeter_id = None
@@ -2355,6 +2422,30 @@ class TelaBancoDados(Screen):
             and rows[0]["dosimeter_id"] == search_text
         ):
             self.selecionar_dosimetro(rows[0])
+
+    def exportar_csv_dosimetros(self):
+        try:
+            rows = self.obter_database().search_dosimeters_for_export(
+                text=self.ids.db_dosimeter_search.text,
+            )
+            dataframe = self._montar_dataframe_dosimetros(
+                rows,
+                incluir_ultima_leitura_bl=True,
+            )
+            output = ASSETS_DIR / "exports" / datetime.now().strftime(
+                "dosimetros_%Y-%m-%d_%H-%M-%S_%f.csv"
+            )
+            output.parent.mkdir(parents=True, exist_ok=True)
+            dataframe.to_csv(
+                output,
+                index=False,
+                encoding="utf-8-sig",
+            )
+            self.dosimeter_message = f"CSV exportado para {output}"
+            return output
+        except (OSError, sqlite3.Error, RuntimeError, ValueError) as error:
+            self.dosimeter_message = f"Erro ao exportar CSV: {error}"
+            return None
 
     def carregar_dosimetro_por_id(self, dosimeter_id=None):
         dosimeter_id = (
@@ -2674,12 +2765,18 @@ class TelaBancoDados(Screen):
             self.reader_message = str(error)
 
     @staticmethod
-    def _montar_dataframe_dosimetros(rows):
+    def _montar_dataframe_dosimetros(
+        rows,
+        *,
+        incluir_ultima_leitura_bl=False,
+    ):
         columns = [
             "Dosímetro", "ECC Hp(10)", "ECC Hp(0,07)",
             "BL Hp(10)", "BL Hp(0,07)",
             "Data inicial", "Data final", "Status",
         ]
+        if incluir_ultima_leitura_bl:
+            columns.append("\u00daltima leitura BL")
         if not rows:
             return pd.DataFrame(columns=columns)
         frame = pd.DataFrame.from_records(rows).sort_values(
@@ -2709,6 +2806,17 @@ class TelaBancoDados(Screen):
             errors="coerce",
         ).dt.strftime("%d/%m/%Y")
         frame["Status"] = frame["active"].map({1: "Ativo", 0: "Inativo"})
+        if incluir_ultima_leitura_bl:
+            local_timezone = datetime.now().astimezone().tzinfo
+            frame["\u00daltima leitura BL"] = (
+                pd.to_datetime(
+                    frame["last_bl_read_at"],
+                    utc=True,
+                    errors="coerce",
+                )
+                .dt.tz_convert(local_timezone)
+                .dt.strftime("%d/%m/%Y %H:%M:%S")
+            )
         result = frame.loc[:, columns].fillna("—").reset_index(drop=True)
         result.attrs["records"] = records
         return result
@@ -2822,6 +2930,13 @@ class TelaBancoDados(Screen):
         return frame.loc[:, columns].reset_index(drop=True)
 
     @staticmethod
+    def _historico_para_exportacao(dataframe):
+        """Mantém os campos exibidos e deixa Data/hora como última coluna."""
+        columns = [column for column in dataframe.columns if column != "Data/hora"]
+        columns.append("Data/hora")
+        return dataframe.loc[:, columns]
+
+    @staticmethod
     def _renderizar_dataframe(
         container,
         dataframe,
@@ -2875,6 +2990,7 @@ class TelaBancoDados(Screen):
                     dosimeter_id=self.ids.db_personal_dose_dosimeter.text or None,
                     date_from=self.ids.db_personal_dose_from.text or None,
                     date_to=self.ids.db_personal_dose_to.text or None,
+                    limit=DATABASE_PAGE_SIZE,
                 )
             )
         except (TypeError, ValueError, sqlite3.Error, RuntimeError) as error:
@@ -2903,6 +3019,7 @@ class TelaBancoDados(Screen):
                 dosimeter_id=self.ids.db_background_dosimeter.text or None,
                 date_from=self.ids.db_background_from.text or None,
                 date_to=self.ids.db_background_to.text or None,
+                limit=DATABASE_PAGE_SIZE,
             )
         except (TypeError, ValueError, sqlite3.Error, RuntimeError) as error:
             self.background_message = f"Erro na pesquisa: {error}"
@@ -2927,35 +3044,56 @@ class TelaBancoDados(Screen):
 
     def exportar_csv_doses_pessoais(self):
         try:
-            if not self._personal_dose_rows:
-                self.pesquisar_doses_pessoais()
+            rows = self.obter_database().search_personal_doses(
+                dosimeter_id=self.ids.db_personal_dose_dosimeter.text or None,
+                date_from=self.ids.db_personal_dose_from.text or None,
+                date_to=self.ids.db_personal_dose_to.text or None,
+                limit=10_000,
+            )
             output = ASSETS_DIR / "exports" / datetime.now().strftime(
                 "personal_dose_%Y-%m-%d_%H-%M-%S_%f.csv"
             )
-            result = self.obter_database().export_personal_doses_csv(
-                output,
-                self._personal_dose_rows,
+            dataframe = self._montar_dataframe_historico(
+                rows,
+                time_column="time_dos",
+                hp10_column="hp10_dos",
+                hp007_column="hp007_dos",
+                status_column="status_dos",
             )
-            self.personal_dose_message = f"CSV exportado para {result}"
-            return result
-        except (OSError, sqlite3.Error, ValueError) as error:
+            dataframe = self._historico_para_exportacao(dataframe)
+            output.parent.mkdir(parents=True, exist_ok=True)
+            dataframe.to_csv(output, index=False, encoding="utf-8-sig")
+            self.personal_dose_message = f"CSV exportado para {output}"
+            return output
+        except (OSError, RuntimeError, sqlite3.Error, ValueError) as error:
             self.personal_dose_message = f"Erro ao exportar CSV: {error}"
             return None
 
     def exportar_csv_backgrounds(self):
         try:
-            if not self._background_rows:
-                self.pesquisar_backgrounds()
+            rows = self.obter_database().search_backgrounds(
+                dosimeter_id=self.ids.db_background_dosimeter.text or None,
+                date_from=self.ids.db_background_from.text or None,
+                date_to=self.ids.db_background_to.text or None,
+                limit=10_000,
+            )
             output = ASSETS_DIR / "exports" / datetime.now().strftime(
                 "background_%Y-%m-%d_%H-%M-%S_%f.csv"
             )
-            result = self.obter_database().export_backgrounds_csv(
-                output,
-                self._background_rows,
+            dataframe = self._montar_dataframe_historico(
+                rows,
+                time_column="time_bg",
+                hp10_column="hp10_counts",
+                hp007_column="hp007_counts",
+                status_column="status_bg",
+                unit="Contagens",
             )
-            self.background_message = f"CSV exportado para {result}"
-            return result
-        except (OSError, sqlite3.Error, ValueError) as error:
+            dataframe = self._historico_para_exportacao(dataframe)
+            output.parent.mkdir(parents=True, exist_ok=True)
+            dataframe.to_csv(output, index=False, encoding="utf-8-sig")
+            self.background_message = f"CSV exportado para {output}"
+            return output
+        except (OSError, RuntimeError, sqlite3.Error, ValueError) as error:
             self.background_message = f"Erro ao exportar CSV: {error}"
             return None
 
@@ -2968,6 +3106,7 @@ class TelaBancoDados(Screen):
                 test_mode=None if mode == "Todos" else mode,
                 date_from=self.ids.db_history_from.text or None,
                 date_to=self.ids.db_history_to.text or None,
+                limit=DATABASE_PAGE_SIZE,
             )
         except (TypeError, ValueError, sqlite3.Error, RuntimeError) as error:
             self.history_message = f"Erro na pesquisa: {error}"
@@ -3015,8 +3154,15 @@ class TelaBancoDados(Screen):
 
     def exportar_csv_historico(self):
         try:
-            if not self._history_rows:
-                self.pesquisar_historico()
+            mode = self.ids.db_history_mode.text
+            rows = self.obter_database().search_measurements(
+                dosimeter_id=self.ids.db_history_dosimeter.text or None,
+                reader_id=self.ids.db_history_reader.text or None,
+                test_mode=None if mode == "Todos" else mode,
+                date_from=self.ids.db_history_from.text or None,
+                date_to=self.ids.db_history_to.text or None,
+                limit=10_000,
+            )
             output = (
                 ASSETS_DIR
                 / "exports"
@@ -3026,7 +3172,7 @@ class TelaBancoDados(Screen):
             )
             result = self.obter_database().export_csv(
                 output,
-                self._history_rows,
+                rows,
             )
             self.history_message = f"CSV exportado para {result}"
             return result
@@ -3412,6 +3558,7 @@ class TelaGraficos(Screen):
 
 class AplicativoInterfaceOSL(App):
     title = "OSLMeter V4.0"
+    RAD_INSTRUMENTS_URL = "https://radinstruments.com.br/"
 
     def build(self):
         ensure_user_data()
@@ -3424,9 +3571,61 @@ class AplicativoInterfaceOSL(App):
         main_screen.carregar_configuracoes()
         return root
 
+    def on_start(self):
+        # Garantia adicional para o executável no Windows: aqui a janela SDL2
+        # já foi criada e Window.maximize() pode atuar sobre ela.
+        Window.maximize()
+
     def trocar_para_graficos(self):
         self.root.transition.direction = "up"
         self.root.current = "graficos"
+
+    def abrir_popup_rad(self):
+        """Show RADinstruments information and offer a link to its website."""
+        content = BoxLayout(
+            orientation="vertical",
+            spacing="12dp",
+            padding="16dp",
+        )
+        content.add_widget(
+            Image(
+                source=resource_path("assets/UI/rad_logo.png"),
+                size_hint_y=None,
+                height="86dp",
+                fit_mode="contain",
+            )
+        )
+        content.add_widget(
+            Label(
+                text="Acesse o site da RADinstruments para conhecer mais.",
+                halign="center",
+                valign="middle",
+            )
+        )
+
+        actions = BoxLayout(size_hint_y=None, height="42dp", spacing="8dp")
+        close_button = Button(text="Fechar")
+        site_button = Button(text="Ir para o site")
+        actions.add_widget(close_button)
+        actions.add_widget(site_button)
+        content.add_widget(actions)
+
+        popup = Popup(
+            title="RADinstruments",
+            content=content,
+            size_hint=(None, None),
+            size=("470dp", "260dp"),
+        )
+        close_button.bind(on_release=popup.dismiss)
+        site_button.bind(
+            on_release=lambda *_args: self._abrir_site_rad(popup)
+        )
+        popup.open()
+        return popup
+
+    def _abrir_site_rad(self, popup):
+        webbrowser.open(self.RAD_INSTRUMENTS_URL)
+        popup.dismiss()
 
     def on_stop(self):
         main = self.root.get_screen("main")
@@ -3442,7 +3641,6 @@ class AplicativoInterfaceOSL(App):
 def main():
     Window.minimum_width = 900
     Window.minimum_height = 650
-    Window.maximize()
     AplicativoInterfaceOSL().run()
 
 

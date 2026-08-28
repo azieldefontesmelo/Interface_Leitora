@@ -889,6 +889,44 @@ class Database:
             record["ecc"] = record["ecc_hp10"]
         return records
 
+    def search_dosimeters_for_export(
+        self,
+        *,
+        text: str | None = None,
+        active: bool | None = None,
+    ) -> list[dict[str, Any]]:
+        """Return dosimeters with the date of their latest BL reading."""
+        clauses: list[str] = []
+        parameters: list[Any] = []
+        if text:
+            clauses.append("d.dosimeter_id LIKE ?")
+            parameters.append(f"%{text.strip()}%")
+        if active is not None:
+            clauses.append("d.active = ?")
+            parameters.append(_active_value(active))
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        with self.connect() as connection:
+            rows = connection.execute(
+                f"""
+                SELECT d.*,
+                       (
+                           SELECT h.time_bg
+                           FROM historico_branco AS h
+                           WHERE h.dosimeter_id = d.dosimeter_id
+                           ORDER BY h.time_bg DESC, h.id DESC
+                           LIMIT 1
+                       ) AS last_bl_read_at
+                FROM dosimeters AS d
+                {where}
+                ORDER BY d.dosimeter_id
+                """,
+                parameters,
+            ).fetchall()
+        records = [dict(row) for row in rows]
+        for record in records:
+            record["ecc"] = record["ecc_hp10"]
+        return records
+
     def update_dosimeter(
         self,
         dosimeter_id: str,

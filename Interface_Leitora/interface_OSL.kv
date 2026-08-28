@@ -99,6 +99,7 @@
     Widget:
 
     BotaoBarraLateral:
+        on_release: app.abrir_popup_rad()
         canvas.after:
             Color:
                 rgba: 0.62, 0.62, 0.62, 1
@@ -353,7 +354,7 @@ ScreenManager:
 
                         TextInput:
                             id: rcf_textInput
-                            text: "0.000033"
+                            text: "1"
                             multiline: False
 
                         Label:
@@ -1070,8 +1071,10 @@ ScreenManager:
             do_default_tab: False
             tab_height: "40dp"
             tab_width: self.width / 5
+            on_current_tab: root.carregar_aba_database(self.current_tab)
 
             TabbedPanelItem:
+                id: tab_db_personal
                 text: "Integral da Área"
 
                 BoxLayout:
@@ -1189,6 +1192,7 @@ ScreenManager:
                         valign: "middle"
 
             TabbedPanelItem:
+                id: tab_db_background
                 text: "Linha de Base"
 
                 BoxLayout:
@@ -1306,6 +1310,7 @@ ScreenManager:
                         valign: "middle"
 
             TabbedPanelItem:
+                id: tab_db_dosimeters
                 text: "Dosímetros"
 
                 BoxLayout:
@@ -1446,6 +1451,9 @@ ScreenManager:
                         Button:
                             text: "Excluir"
                             on_release: root.excluir_dosimetro()
+                        Button:
+                            text: "Exportar CSV"
+                            on_release: root.exportar_csv_dosimetros()
 
                     BoxLayout:
                         size_hint_y: None
@@ -1514,6 +1522,7 @@ ScreenManager:
                         valign: "middle"
 
             TabbedPanelItem:
+                id: tab_db_readers
                 text: "Leitoras"
 
                 BoxLayout:
@@ -1672,6 +1681,7 @@ ScreenManager:
                         valign: "middle"
 
             TabbedPanelItem:
+                id: tab_db_history
                 text: "Histórico"
 
                 BoxLayout:
