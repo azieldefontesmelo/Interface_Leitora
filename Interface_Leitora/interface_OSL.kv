@@ -1181,7 +1181,7 @@ ScreenManager:
                             on_release: root.pesquisar_doses_pessoais()
                         Button:
                             text: "Export CSV"
-                            on_release: root.exportar_csv_doses_pessoais()
+                            on_release: root.abrir_popup_exportacao("personal")
 
                     Label:
                         text: root.personal_dose_message
@@ -1299,7 +1299,7 @@ ScreenManager:
                             on_release: root.pesquisar_backgrounds()
                         Button:
                             text: "Export CSV"
-                            on_release: root.exportar_csv_backgrounds()
+                            on_release: root.abrir_popup_exportacao("background")
 
                     Label:
                         text: root.background_message
@@ -1453,7 +1453,7 @@ ScreenManager:
                             on_release: root.excluir_dosimetro()
                         Button:
                             text: "Exportar CSV"
-                            on_release: root.exportar_csv_dosimetros()
+                            on_release: root.abrir_popup_exportacao("dosimeters")
 
                     BoxLayout:
                         size_hint_y: None
@@ -1822,7 +1822,7 @@ ScreenManager:
                             on_release: root.pesquisar_historico()
                         Button:
                             text: "Exportar CSV"
-                            on_release: root.exportar_csv_historico()
+                            on_release: root.abrir_popup_exportacao("measurements")
                         Button:
                             text: "Exportar backup do banco"
                             on_release: root.abrir_dialogo_backup()

@@ -14,7 +14,7 @@ from typing import Any, Iterator, Mapping, Sequence
 from app_paths import USER_DATA_DIR
 
 
-SCHEMA_VERSION = 7
+SCHEMA_VERSION = 9
 BUSY_TIMEOUT_MS = 10_000
 
 
@@ -85,7 +85,13 @@ BACKGROUND_COLUMNS = (
 )
 
 PERSONAL_DOSE_STATUS = "Need to Erase"
+READY_FOR_USE_STATUS = "Ready to Use"
+NEED_RE_READ_STATUS = "Need to Re-read"
 BACKGROUND_STATUS = "Ready to Use"
+
+VALID_PERSONAL_DOSE_STATUSES = frozenset(
+    {PERSONAL_DOSE_STATUS, READY_FOR_USE_STATUS, NEED_RE_READ_STATUS}
+)
 
 VALID_TEST_MODES = frozenset({"MANUAL", "DOSIMETER_ID"})
 VALID_READING_TYPES = frozenset({"PERSONAL_DOSE", "BACKGROUND"})
@@ -203,7 +209,11 @@ CREATE TABLE IF NOT EXISTS historico_dose (
     hp007_dos    REAL CHECK (hp007_dos IS NULL OR hp007_dos >= 0),
     dose_dos     REAL NOT NULL CHECK (dose_dos >= 0),
     status_dos   TEXT NOT NULL DEFAULT 'Need to Erase'
-                 CHECK (status_dos = 'Need to Erase'),
+                 CHECK (
+                     status_dos IN (
+                         'Need to Erase', 'Ready to Use', 'Need to Re-read'
+                     )
+                 ),
     created_at   TEXT NOT NULL,
     FOREIGN KEY (dosimeter_id)
         REFERENCES dosimeters(dosimeter_id)
@@ -455,6 +465,12 @@ class Database:
             self._migrate_optional_dosimeter_end_date(connection)
             self._migrate_dual_dosimeter_parameters(connection)
             self._migrate_measurement_histories(connection)
+            self._migrate_personal_dose_statuses(connection)
+            # This cleanup belongs to the v8 migration. Do not run it again
+            # when a v8 database is upgraded only for the status-tag schema.
+            if current_version < 8:
+                self._migrate_legacy_history_duplicates(connection)
+            self._refresh_personal_dose_statuses(connection)
             if current_version < SCHEMA_VERSION:
                 now = utc_now()
                 connection.execute(
@@ -465,6 +481,339 @@ class Database:
                     (SCHEMA_VERSION, now),
                 )
                 connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
+
+    @staticmethod
+    def _refresh_personal_dose_statuses(
+        connection: sqlite3.Connection,
+    ) -> None:
+        """Keep the persisted personal-dose tag derived from the dose value."""
+        connection.execute(
+            """
+            UPDATE historico_dose
+            SET status_dos = CASE
+                WHEN dose_dos < 0.01 THEN 'Need to Erase'
+                WHEN dose_dos < 2 THEN 'Ready to Use'
+                ELSE 'Need to Re-read'
+            END
+            """
+        )
+
+    @staticmethod
+    def _migrate_personal_dose_statuses(
+        connection: sqlite3.Connection,
+    ) -> None:
+        """Upgrade the old one-tag history table to the dose-based tags."""
+        table_sql = connection.execute(
+            """
+            SELECT sql
+            FROM sqlite_master
+            WHERE type = 'table' AND name = 'historico_dose'
+            """
+        ).fetchone()[0]
+        if table_sql and "status_dos = 'Need to Erase'" in table_sql:
+            connection.execute("PRAGMA foreign_keys = OFF")
+            try:
+                connection.executescript(
+                    """
+                    DROP INDEX IF EXISTS idx_historico_dose_dosimeter_time;
+                    DROP INDEX IF EXISTS idx_historico_dose_time;
+                    DROP INDEX IF EXISTS idx_historico_dose_measurement;
+                    DROP INDEX IF EXISTS idx_historico_dose_session;
+
+                    CREATE TABLE historico_dose_v9 (
+                        id           INTEGER PRIMARY KEY AUTOINCREMENT,
+                        measurement_id INTEGER,
+                        test_session_id TEXT,
+                        hp10_measurement_id INTEGER,
+                        hp007_measurement_id INTEGER,
+                        time_dos     TEXT NOT NULL,
+                        dosimeter_id TEXT NOT NULL,
+                        hp10_dos     REAL CHECK (hp10_dos IS NULL OR hp10_dos >= 0),
+                        hp007_dos    REAL CHECK (hp007_dos IS NULL OR hp007_dos >= 0),
+                        dose_dos     REAL NOT NULL CHECK (dose_dos >= 0),
+                        status_dos   TEXT NOT NULL DEFAULT 'Need to Erase'
+                                     CHECK (
+                                         status_dos IN (
+                                             'Need to Erase', 'Ready to Use',
+                                             'Need to Re-read'
+                                         )
+                                     ),
+                        created_at   TEXT NOT NULL,
+                        FOREIGN KEY (dosimeter_id)
+                            REFERENCES dosimeters(dosimeter_id)
+                            ON UPDATE CASCADE ON DELETE RESTRICT,
+                        FOREIGN KEY (measurement_id)
+                            REFERENCES measurements(id)
+                            ON UPDATE CASCADE ON DELETE RESTRICT,
+                        FOREIGN KEY (hp10_measurement_id)
+                            REFERENCES measurements(id)
+                            ON UPDATE CASCADE ON DELETE RESTRICT,
+                        FOREIGN KEY (hp007_measurement_id)
+                            REFERENCES measurements(id)
+                            ON UPDATE CASCADE ON DELETE RESTRICT
+                    );
+
+                    INSERT INTO historico_dose_v9 (
+                        id, measurement_id, test_session_id,
+                        hp10_measurement_id, hp007_measurement_id,
+                        time_dos, dosimeter_id, hp10_dos, hp007_dos,
+                        dose_dos, status_dos, created_at
+                    )
+                    SELECT id, measurement_id, test_session_id,
+                           hp10_measurement_id, hp007_measurement_id,
+                           time_dos, dosimeter_id, hp10_dos, hp007_dos,
+                           dose_dos,
+                           CASE
+                               WHEN dose_dos < 0.01 THEN 'Need to Erase'
+                               WHEN dose_dos < 2 THEN 'Ready to Use'
+                               ELSE 'Need to Re-read'
+                           END,
+                           created_at
+                    FROM historico_dose;
+
+                    DROP TABLE historico_dose;
+                    ALTER TABLE historico_dose_v9 RENAME TO historico_dose;
+
+                    CREATE INDEX idx_historico_dose_dosimeter_time
+                        ON historico_dose(dosimeter_id, time_dos DESC);
+                    CREATE INDEX idx_historico_dose_time
+                        ON historico_dose(time_dos DESC);
+                    CREATE UNIQUE INDEX idx_historico_dose_measurement
+                        ON historico_dose(measurement_id)
+                        WHERE measurement_id IS NOT NULL;
+                    CREATE UNIQUE INDEX idx_historico_dose_session
+                        ON historico_dose(test_session_id)
+                        WHERE test_session_id IS NOT NULL;
+                    """
+                )
+            finally:
+                connection.execute("PRAGMA foreign_keys = ON")
+
+    @staticmethod
+    def _personal_dose_status(dose: float) -> str:
+        """Return the English tag for a personal dose reading."""
+        value = float(dose)
+        if not math.isfinite(value) or value < 0:
+            raise ValueError("A dose deve ser um número finito não negativo")
+        if value < 0.01:
+            return PERSONAL_DOSE_STATUS
+        if value < 2:
+            return READY_FOR_USE_STATUS
+        return NEED_RE_READ_STATUS
+
+    @staticmethod
+    def _migrate_legacy_history_duplicates(
+        connection: sqlite3.Connection,
+    ) -> None:
+        """Collapse one legacy history row per acquisition into one per session.
+
+        Older migrations created a synthetic history session for every completed
+        measurement.  That made repeated BL readings appear as repeated final
+        history records.  The source measurements still contain the real
+        session id, so use it to retain one consolidated row per session.
+        """
+
+        configurations = (
+            (
+                "historico_dose",
+                "legacy-measurement-dose-%",
+                "time_dos",
+                "hp10_dos",
+                "hp007_dos",
+                "dose_dos",
+                "status_dos",
+                PERSONAL_DOSE_STATUS,
+                "dose_msv",
+            ),
+            (
+                "historico_branco",
+                "legacy-measurement-background-%",
+                "time_bg",
+                "hp10_counts",
+                "hp007_counts",
+                "counts",
+                "status_bg",
+                BACKGROUND_STATUS,
+                "raw_signal",
+            ),
+        )
+
+        for (
+            table,
+            legacy_pattern,
+            time_column,
+            hp10_column,
+            hp007_column,
+            aggregate_column,
+            status_column,
+            status_value,
+            source_value_column,
+        ) in configurations:
+            legacy_rows = connection.execute(
+                f"""
+                SELECT h.*, m.test_session_id AS source_session_id
+                FROM {table} AS h
+                LEFT JOIN measurements AS m
+                  ON m.id = COALESCE(
+                        h.measurement_id,
+                        h.hp10_measurement_id,
+                        h.hp007_measurement_id
+                     )
+                WHERE h.test_session_id LIKE ?
+                ORDER BY h.id
+                """,
+                (legacy_pattern,),
+            ).fetchall()
+            groups: dict[str, list[sqlite3.Row]] = {}
+            for row in legacy_rows:
+                source_session_id = row["source_session_id"]
+                if source_session_id:
+                    groups.setdefault(str(source_session_id), []).append(row)
+
+            if not groups:
+                continue
+
+            consolidated_sessions = {
+                row["test_session_id"]
+                for row in connection.execute(
+                    f"""
+                    SELECT test_session_id
+                    FROM {table}
+                    WHERE test_session_id IS NOT NULL
+                      AND test_session_id NOT LIKE ?
+                    """,
+                    (legacy_pattern,),
+                ).fetchall()
+            }
+
+            # Delete first.  This lets the representative row take the real
+            # session id without violating the unique session index.
+            rows_to_delete: list[tuple[int]] = []
+            representatives: list[tuple[str, sqlite3.Row]] = []
+            for source_session_id, rows in groups.items():
+                if source_session_id in consolidated_sessions:
+                    rows_to_delete.extend((int(row["id"]),) for row in rows)
+                    continue
+                representative = max(
+                    rows,
+                    key=lambda row: (
+                        str(row[time_column] or ""),
+                        int(row["id"]),
+                    ),
+                )
+                representatives.append((source_session_id, representative))
+                rows_to_delete.extend(
+                    (int(row["id"]),)
+                    for row in rows
+                    if int(row["id"]) != int(representative["id"])
+                )
+
+            if rows_to_delete:
+                connection.executemany(
+                    f"DELETE FROM {table} WHERE id = ?",
+                    rows_to_delete,
+                )
+
+            for source_session_id, representative in representatives:
+                measurements = connection.execute(
+                    f"""
+                    SELECT *
+                    FROM measurements
+                    WHERE test_session_id = ?
+                      AND test_mode = 'DOSIMETER_ID'
+                      AND reading_type = ?
+                      AND status = 'CONCLUIDO'
+                      AND dose_channel IN ('HP10', 'HP007')
+                    ORDER BY measured_at DESC, id DESC
+                    """,
+                    (
+                        source_session_id,
+                        "BACKGROUND"
+                        if table == "historico_branco"
+                        else "PERSONAL_DOSE",
+                    ),
+                ).fetchall()
+                latest_by_channel: dict[str, sqlite3.Row] = {}
+                for measurement in measurements:
+                    latest_by_channel.setdefault(
+                        measurement["dose_channel"],
+                        measurement,
+                    )
+
+                source_by_channel = {
+                    "HP10": latest_by_channel.get("HP10"),
+                    "HP007": latest_by_channel.get("HP007"),
+                }
+                selected_measurements = [
+                    measurement
+                    for measurement in source_by_channel.values()
+                    if measurement is not None
+                ]
+                if selected_measurements:
+                    primary = max(
+                        selected_measurements,
+                        key=lambda row: (
+                            str(row["measured_at"] or ""),
+                            int(row["id"]),
+                        ),
+                    )
+                    hp10_value = (
+                        None
+                        if source_by_channel["HP10"] is None
+                        else source_by_channel["HP10"][source_value_column]
+                    )
+                    hp007_value = (
+                        None
+                        if source_by_channel["HP007"] is None
+                        else source_by_channel["HP007"][source_value_column]
+                    )
+                    aggregate_value = max(
+                        float(value)
+                        for value in (hp10_value, hp007_value)
+                        if value is not None
+                    )
+                    update_values = (
+                        source_session_id,
+                        int(primary["id"]),
+                        None
+                        if source_by_channel["HP10"] is None
+                        else int(source_by_channel["HP10"]["id"]),
+                        None
+                        if source_by_channel["HP007"] is None
+                        else int(source_by_channel["HP007"]["id"]),
+                        primary["measured_at"],
+                        primary["dosimeter_id"],
+                        hp10_value,
+                        hp007_value,
+                        aggregate_value,
+                        status_value,
+                        representative["created_at"],
+                        int(representative["id"]),
+                    )
+                    connection.execute(
+                        f"""
+                        UPDATE {table}
+                        SET test_session_id = ?, measurement_id = ?,
+                            hp10_measurement_id = ?, hp007_measurement_id = ?,
+                            {time_column} = ?, dosimeter_id = ?,
+                            {hp10_column} = ?, {hp007_column} = ?,
+                            {aggregate_column} = ?, {status_column} = ?,
+                            created_at = ?
+                        WHERE id = ?
+                        """,
+                        update_values,
+                    )
+                else:
+                    # Keep malformed legacy rows available for audit instead of
+                    # deleting data that cannot be linked to source measurements.
+                    connection.execute(
+                        f"""
+                        UPDATE {table}
+                        SET test_session_id = ?
+                        WHERE id = ?
+                        """,
+                        (source_session_id, int(representative["id"])),
+                    )
 
     @staticmethod
     def _migrate_optional_dosimeter_end_date(
@@ -894,8 +1243,14 @@ class Database:
         *,
         text: str | None = None,
         active: bool | None = None,
+        date_from: date | datetime | str | None = None,
+        date_to: date | datetime | str | None = None,
     ) -> list[dict[str, Any]]:
-        """Return dosimeters with the date of their latest BL reading."""
+        """Return dosimeters valid during the requested period.
+
+        A dosimeter is included when its validity interval overlaps the
+        selected period. The latest BL reading is returned independently.
+        """
         clauses: list[str] = []
         parameters: list[Any] = []
         if text:
@@ -904,6 +1259,12 @@ class Database:
         if active is not None:
             clauses.append("d.active = ?")
             parameters.append(_active_value(active))
+        if date_from is not None:
+            clauses.append("(d.end_date IS NULL OR d.end_date >= ?)")
+            parameters.append(normalize_date(date_from))
+        if date_to is not None:
+            clauses.append("d.begin_date <= ?")
+            parameters.append(normalize_date(date_to))
         where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
         with self.connect() as connection:
             rows = connection.execute(
@@ -1598,8 +1959,10 @@ class Database:
         *,
         hp10_measurement_id: int | None = None,
         hp007_measurement_id: int | None = None,
+        hp10_counts: float | None = None,
+        hp007_counts: float | None = None,
     ) -> dict[str, Any]:
-        """Apply operator-selected BL readings without changing the schema."""
+        """Apply selected BL readings or calculated BL values."""
         clean_session_id = str(test_session_id).strip()
         clean_dosimeter_id = normalize_dosimeter_id(dosimeter_id)
         if not clean_session_id:
@@ -1608,8 +1971,20 @@ class Database:
             "HP10": hp10_measurement_id,
             "HP007": hp007_measurement_id,
         }
-        if all(measurement_id is None for measurement_id in selected_ids.values()):
+        selected_counts = {
+            "HP10": hp10_counts,
+            "HP007": hp007_counts,
+        }
+        if all(
+            measurement_id is None and selected_counts[channel] is None
+            for channel, measurement_id in selected_ids.items()
+        ):
             raise ValueError("Selecione ao menos uma leitura de BL")
+        if any(
+            measurement_id is not None and selected_counts[channel] is not None
+            for channel, measurement_id in selected_ids.items()
+        ):
+            raise ValueError("Escolha uma leitura ou um valor calculado por grandeza")
 
         with self.connect() as connection:
             dosimeter = connection.execute(
@@ -1646,12 +2021,26 @@ class Database:
             hp10_counts = (
                 float(selected["HP10"]["raw_signal"])
                 if "HP10" in selected
-                else None
+                else (
+                    _non_negative_number(
+                        selected_counts["HP10"],
+                        "Contagens Hp(10)",
+                    )
+                    if selected_counts["HP10"] is not None
+                    else None
+                )
             )
             hp007_counts = (
                 float(selected["HP007"]["raw_signal"])
                 if "HP007" in selected
-                else None
+                else (
+                    _non_negative_number(
+                        selected_counts["HP007"],
+                        "Contagens Hp(0,07)",
+                    )
+                    if selected_counts["HP007"] is not None
+                    else None
+                )
             )
             applied_at = utc_now()
             connection.execute(
@@ -1669,13 +2058,17 @@ class Database:
             )
 
             selected_rows = list(selected.values())
-            primary_measurement = max(selected_rows, key=lambda row: row["id"])
+            primary_measurement = (
+                max(selected_rows, key=lambda row: row["id"])
+                if selected_rows
+                else None
+            )
             applied_counts = [
                 value for value in (hp10_counts, hp007_counts) if value is not None
             ]
-            cursor = connection.execute(
+            connection.execute(
                 """
-                INSERT INTO historico_branco (
+                INSERT OR IGNORE INTO historico_branco (
                     measurement_id, test_session_id,
                     hp10_measurement_id, hp007_measurement_id,
                     time_bg, dosimeter_id, hp10_counts, hp007_counts,
@@ -1684,11 +2077,15 @@ class Database:
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
-                    primary_measurement["id"],
+                    primary_measurement["id"] if primary_measurement else None,
                     clean_session_id,
                     selected["HP10"]["id"] if "HP10" in selected else None,
                     selected["HP007"]["id"] if "HP007" in selected else None,
-                    max(row["measured_at"] for row in selected_rows),
+                    (
+                        max(row["measured_at"] for row in selected_rows)
+                        if selected_rows
+                        else applied_at
+                    ),
                     clean_dosimeter_id,
                     hp10_counts,
                     hp007_counts,
@@ -1713,8 +2110,12 @@ class Database:
                     ),
                 )
             history = connection.execute(
-                "SELECT * FROM historico_branco WHERE id = ?",
-                (int(cursor.lastrowid),),
+                """
+                SELECT *
+                FROM historico_branco
+                WHERE test_session_id = ?
+                """,
+                (clean_session_id,),
             ).fetchone()
         return dict(history)
 
@@ -1798,7 +2199,7 @@ class Database:
                         hp10["dose_msv"],
                         hp007["dose_msv"],
                         aggregate_dose,
-                        PERSONAL_DOSE_STATUS,
+                        self._personal_dose_status(aggregate_dose),
                         utc_now(),
                     ),
                 )
@@ -1888,17 +2289,12 @@ class Database:
         hp007_dos: float | None = None,
         dose_dos: float | None = None,
         time_dos: datetime | str | None = None,
-        status_dos: str = PERSONAL_DOSE_STATUS,
+        status_dos: str | None = None,
     ) -> int:
         """Store a used dosimeter reading in ``historico_dose``."""
         clean_id = normalize_dosimeter_id(dosimeter_id)
         if self.get_dosimeter(clean_id) is None:
             raise ValueError("Dosímetro não cadastrado")
-        clean_status = str(status_dos).strip()
-        if clean_status.casefold() != PERSONAL_DOSE_STATUS.casefold():
-            raise ValueError(
-                f"status_dos deve ser '{PERSONAL_DOSE_STATUS}'"
-            )
         if hp10_dos is None and hp007_dos is None and dose_dos is not None:
             hp10_dos = dose_dos
             hp007_dos = dose_dos
@@ -1906,6 +2302,20 @@ class Database:
             raise ValueError("Informe Hp(10) e Hp(0,07)")
         hp10 = _non_negative_number(hp10_dos, "Hp(10)")
         hp007 = _non_negative_number(hp007_dos, "Hp(0,07)")
+        aggregate_dose = max(hp10, hp007)
+        expected_status = self._personal_dose_status(aggregate_dose)
+        if status_dos is None:
+            clean_status = expected_status
+        else:
+            clean_status = str(status_dos).strip()
+            if clean_status not in VALID_PERSONAL_DOSE_STATUSES:
+                valid = ", ".join(sorted(VALID_PERSONAL_DOSE_STATUSES))
+                raise ValueError(f"status_dos deve ser uma destas tags: {valid}")
+            if clean_status != expected_status:
+                raise ValueError(
+                    "status_dos não corresponde à dose informada; "
+                    f"use '{expected_status}'"
+                )
         with self.connect() as connection:
             cursor = connection.execute(
                 """
@@ -1921,8 +2331,8 @@ class Database:
                     clean_id,
                     hp10,
                     hp007,
-                    max(hp10, hp007),
-                    PERSONAL_DOSE_STATUS,
+                    aggregate_dose,
+                    clean_status,
                     utc_now(),
                 ),
             )

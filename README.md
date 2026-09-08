@@ -153,7 +153,7 @@ O banco é criado automaticamente em:
 Interface_Leitora/assets/database/measurements.sqlite3
 ```
 
-O esquema atual é a **versão 6**. A inicialização executa migrações compatíveis
+O esquema atual é a **versão 8**. A inicialização executa migrações compatíveis
 com bancos anteriores e registra a versão em `PRAGMA user_version` e
 `schema_versions`.
 
@@ -215,8 +215,14 @@ Mantém os dois valores, os IDs das duas medições e o status `Need to Erase`.
 
 #### `historico_branco`
 
-Guarda o resultado consolidado da sessão iniciada após Erase. Também exige as
-duas grandezas concluídas e usa o status `Ready to Use`.
+Guarda uma única linha com o resultado consolidado da sessão iniciada após
+Erase. As repetições usadas para escolher o BL permanecem em `measurements`,
+mas não são duplicadas no histórico final. Também exige as duas grandezas
+concluídas e usa o status `Ready to Use`.
+
+`historico_dose` segue a mesma regra: cada `test_session_id` gera no máximo
+uma linha, protegida por índice único no SQLite. A abertura repetida de uma
+sessão já consolidada é idempotente.
 
 ### Integridade e relacionamentos
 
@@ -318,8 +324,10 @@ automaticamente; aceita `dd/mm/aaaa`, e a data final é opcional.
 
 ## CSV, backup e importação
 
-- Integral da Área, Linha de Base e medições podem ser exportados em CSV
+- Integral da Área, Linha de Base, Dosímetros e medições podem ser exportados em CSV
   `UTF-8 com BOM`.
+- Ao clicar em `Exportar CSV`, a interface abre um popup para informar a data
+  inicial e final ou selecionar `Dados de hoje`.
 - O backup usa `sqlite3.Connection.backup()` e valida o resultado com
   `PRAGMA integrity_check`.
 - A importação valida tabelas, integridade e chaves estrangeiras, migra o
@@ -400,6 +408,16 @@ visual da interface.
 cd Interface_Leitora
 pyinstaller OSLMeter.spec
 ```
+
+O arquivo `.spec` inclui o layout Kivy, os assets necessários e
+`assets/UI/iconeOSL.ico` como ícone do executável. No executável, os caminhos
+são resolvidos a partir de `sys._MEIPASS`.
+
+O instalador gerado em `installer/OSLMeter_Setup.exe` instala o executável em
+`%LocalAppData%\Programs\OSLMeter` e cria um atalho no menu Iniciar. Ele não
+inclui o banco SQLite e não copia, substitui ou remove arquivos em
+`Documentos\OSLMeter`; o aplicativo continua usando esse local para os dados
+persistentes.
 
 O arquivo `.spec` inclui o layout Kivy e os assets necessários. No executável,
 os caminhos são resolvidos a partir de `sys._MEIPASS`.

@@ -34,3 +34,7 @@ Interface_Leitora/build/
 Interface_Leitora/dist/
 Interface_Leitora/tests/__pycache__/
 .pytest_cache/
+
+# Intermediários locais usados para montar o instalador
+Interface_Leitora/installer/payload/
+Interface_Leitora/installer/pyinstaller-work/

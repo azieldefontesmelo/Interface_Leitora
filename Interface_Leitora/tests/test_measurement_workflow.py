@@ -78,7 +78,7 @@ class MeasurementWorkflowTestCase(unittest.TestCase):
                 fang=5,
                 fenerg=6,
             ),
-            0,
+            abs(1 - 2) * 3 * 4 * 5 * 6,
         )
 
 

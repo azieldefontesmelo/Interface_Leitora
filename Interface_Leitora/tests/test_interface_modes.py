@@ -3,7 +3,7 @@ from __future__ import annotations
 import csv
 import tempfile
 import unittest
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 from kivy.clock import Clock
@@ -400,6 +400,88 @@ class InterfaceModeTestCase(unittest.TestCase):
         self.assertEqual(
             background_rows[0][expected_background_columns[-1]], expected_background_date
         )
+
+    def test_csv_export_popup_can_export_only_todays_data(self):
+        now = datetime.now()
+        self.database.add_personal_dose(
+            "0123456789",
+            hp10_dos=1.125,
+            hp007_dos=2.25,
+            time_dos=now,
+        )
+        self.database.add_personal_dose(
+            "0123456789",
+            hp10_dos=3.125,
+            hp007_dos=4.25,
+            time_dos=now - timedelta(days=1),
+        )
+
+        previous_assets_dir = interface_OSL.ASSETS_DIR
+        interface_OSL.ASSETS_DIR = self.root_path / "csv_today_export"
+        popup = self.bank.abrir_popup_exportacao("personal")
+        fields = self.bank._export_popup_fields
+        try:
+            fields["today"].active = True
+            today_text = datetime.now().strftime("%d/%m/%Y")
+            self.assertEqual(fields["initial"].text, today_text)
+            self.assertEqual(fields["final"].text, today_text)
+            self.assertTrue(fields["initial"].disabled)
+            self.assertTrue(fields["final"].disabled)
+
+            output = self.bank._confirmar_exportacao(
+                popup,
+                "personal",
+                fields["initial"],
+                fields["final"],
+                fields["today"],
+                fields["error"],
+            )
+        finally:
+            if popup is not None:
+                popup.dismiss()
+            interface_OSL.ASSETS_DIR = previous_assets_dir
+
+        self.assertIsNotNone(output)
+        with output.open(encoding="utf-8-sig", newline="") as file:
+            rows = list(csv.DictReader(file))
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["Hp(10) mSv"], "1.125")
+
+    def test_dosimeter_csv_export_popup_filters_validity_period(self):
+        self.database.register_dosimeter(
+            "9876543210",
+            ecc_hp10=1.1,
+            ecc_hp007=1.2,
+            begin_date="2031-01-01",
+            end_date="2031-12-31",
+        )
+
+        previous_assets_dir = interface_OSL.ASSETS_DIR
+        interface_OSL.ASSETS_DIR = self.root_path / "csv_dosimeter_export"
+        popup = self.bank.abrir_popup_exportacao("dosimeters")
+        fields = self.bank._export_popup_fields
+        try:
+            self.assertEqual(fields["initial"].text, "")
+            self.assertEqual(fields["final"].text, "")
+            fields["initial"].text = "01/01/2026"
+            fields["final"].text = "31/12/2026"
+            output = self.bank._confirmar_exportacao(
+                popup,
+                "dosimeters",
+                fields["initial"],
+                fields["final"],
+                fields["today"],
+                fields["error"],
+            )
+        finally:
+            if popup is not None:
+                popup.dismiss()
+            interface_OSL.ASSETS_DIR = previous_assets_dir
+
+        self.assertIsNotNone(output)
+        with output.open(encoding="utf-8-sig", newline="") as file:
+            rows = list(csv.DictReader(file))
+        self.assertEqual([row["Dosímetro"] for row in rows], ["0123456789"])
 
     def test_unregistered_dosimeter_gets_defaults_and_tab_order(self):
         new_id = "0000000002"

@@ -108,4 +108,4 @@ def calculate_dose(
     fang: float,
     fenerg: float,
 ) -> float:
-    return max(0.0, (total - baseline) * rcf * ecc * fang * fenerg)
+    return abs(total - baseline) * rcf * ecc * fang * fenerg

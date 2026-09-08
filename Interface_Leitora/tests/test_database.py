@@ -12,8 +12,10 @@ from database import (
     BACKGROUND_STATUS,
     Database,
     MEASUREMENT_COLUMNS,
+    NEED_RE_READ_STATUS,
     PERSONAL_DOSE_COLUMNS,
     PERSONAL_DOSE_STATUS,
+    READY_FOR_USE_STATUS,
     SCHEMA,
     SCHEMA_VERSION,
 )
@@ -97,6 +99,29 @@ class DatabaseTestCase(unittest.TestCase):
             rows[0]["last_bl_read_at"],
             "2026-07-30T11:00:00.000+00:00",
         )
+
+    def test_dosimeter_export_search_filters_by_validity_period(self):
+        self.register_valid_records()
+        self.database.register_dosimeter(
+            "9876543210",
+            ecc_hp10=1.1,
+            ecc_hp007=1.2,
+            begin_date="2031-01-01",
+            end_date="2031-12-31",
+        )
+
+        rows = self.database.search_dosimeters_for_export(
+            date_from="01/01/2026",
+            date_to="31/12/2026",
+        )
+
+        self.assertEqual([row["dosimeter_id"] for row in rows], ["0123456789"])
+
+        rows = self.database.search_dosimeters_for_export(
+            date_from="01/06/2031",
+            date_to="30/06/2031",
+        )
+        self.assertEqual([row["dosimeter_id"] for row in rows], ["9876543210"])
 
     def test_creates_database_and_idempotent_versioned_schema(self):
         self.assertTrue(self.db_path.is_file())
@@ -498,7 +523,7 @@ class DatabaseTestCase(unittest.TestCase):
         )
 
         personal = self.database.get_personal_dose(personal_id)
-        self.assertEqual(personal["status_dos"], PERSONAL_DOSE_STATUS)
+        self.assertEqual(personal["status_dos"], NEED_RE_READ_STATUS)
         self.assertEqual(personal["dose_dos"], 2.387)
         self.assertEqual(
             [row["id"] for row in self.database.search_personal_doses()],
@@ -600,6 +625,76 @@ class DatabaseTestCase(unittest.TestCase):
         self.assertEqual(len(self.database.search_personal_doses()), 1)
         self.assertEqual(len(self.database.search_backgrounds()), 1)
 
+    def test_legacy_history_rows_are_collapsed_to_one_row_per_session(self):
+        self.register_valid_records()
+        session_id = uuid4().hex
+        hp10_first = self.add_valid_measurement(
+            measured_at="2026-07-30T12:00:00Z",
+            raw_signal=1111,
+            reading_type="BACKGROUND",
+            dose_channel="HP10",
+            test_session_id=session_id,
+        )
+        hp10_latest = self.add_valid_measurement(
+            measured_at="2026-07-30T12:00:10Z",
+            raw_signal=1222,
+            reading_type="BACKGROUND",
+            dose_channel="HP10",
+            test_session_id=session_id,
+        )
+        hp007_latest = self.add_valid_measurement(
+            measured_at="2026-07-30T12:00:20Z",
+            raw_signal=2333,
+            reading_type="BACKGROUND",
+            dose_channel="HP007",
+            test_session_id=session_id,
+        )
+
+        with self.database.connect() as connection:
+            for measurement_id in (hp10_first, hp10_latest, hp007_latest):
+                measurement = connection.execute(
+                    "SELECT * FROM measurements WHERE id = ?",
+                    (measurement_id,),
+                ).fetchone()
+                connection.execute(
+                    """
+                    INSERT INTO historico_branco (
+                        measurement_id, test_session_id,
+                        hp10_measurement_id, time_bg, dosimeter_id,
+                        hp10_counts, counts, status_bg, created_at
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        measurement_id,
+                        f"legacy-measurement-background-{measurement_id}",
+                        measurement_id,
+                        measurement["measured_at"],
+                        measurement["dosimeter_id"],
+                        measurement["raw_signal"],
+                        measurement["raw_signal"],
+                        BACKGROUND_STATUS,
+                        measurement["created_at"],
+                    ),
+                )
+            connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION - 2}")
+
+        upgraded = Database(self.db_path)
+        rows = upgraded.search_backgrounds()
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["test_session_id"], session_id)
+        self.assertEqual(rows[0]["hp10_measurement_id"], hp10_latest)
+        self.assertEqual(rows[0]["hp007_measurement_id"], hp007_latest)
+        self.assertEqual(rows[0]["hp10_counts"], 1222)
+        self.assertEqual(rows[0]["hp007_counts"], 2333)
+        with upgraded.connect() as connection:
+            self.assertEqual(
+                connection.execute(
+                    "SELECT count(*) FROM historico_branco"
+                ).fetchone()[0],
+                1,
+            )
+
     def test_operator_selected_bl_updates_existing_fields_without_migration(self):
         self.register_valid_records()
         session_id = uuid4().hex
@@ -646,6 +741,14 @@ class DatabaseTestCase(unittest.TestCase):
         self.assertEqual(history["hp007_measurement_id"], hp007_selected)
         self.assertEqual(history["hp10_counts"], 1222)
         self.assertEqual(history["hp007_counts"], 2333)
+        repeated = self.database.apply_baseline_selection(
+            session_id,
+            "0123456789",
+            hp10_measurement_id=hp10_selected,
+            hp007_measurement_id=hp007_selected,
+        )
+        self.assertEqual(repeated["id"], history["id"])
+        self.assertEqual(len(self.database.search_backgrounds()), 1)
         updated = self.database.get_dosimeter("0123456789")
         self.assertEqual(updated["bl_hp10"], 1222)
         self.assertEqual(updated["bl_hp007"], 2333)
@@ -687,7 +790,7 @@ class DatabaseTestCase(unittest.TestCase):
             self.database.add_personal_dose(
                 "0123456789",
                 dose_dos=1,
-                status_dos="Ready to Use",
+                status_dos="Need to Re-read",
             )
         with self.assertRaisesRegex(ValueError, "não pode ser negativo"):
             self.database.add_background(
@@ -715,6 +818,24 @@ class DatabaseTestCase(unittest.TestCase):
             self.assertEqual(tuple(csv.DictReader(file).fieldnames), PERSONAL_DOSE_COLUMNS)
         with background_csv.open(encoding="utf-8-sig", newline="") as file:
             self.assertEqual(tuple(csv.DictReader(file).fieldnames), BACKGROUND_COLUMNS)
+
+    def test_personal_dose_status_tags_follow_the_defined_boundaries(self):
+        self.register_valid_records()
+        cases = (
+            (0.009999, PERSONAL_DOSE_STATUS),
+            (0.01, READY_FOR_USE_STATUS),
+            (1.999999, READY_FOR_USE_STATUS),
+            (2, NEED_RE_READ_STATUS),
+        )
+        for dose, expected_status in cases:
+            record_id = self.database.add_personal_dose(
+                "0123456789",
+                dose_dos=dose,
+            )
+            self.assertEqual(
+                self.database.get_personal_dose(record_id)["status_dos"],
+                expected_status,
+            )
 
     def test_version_one_database_is_upgraded_without_losing_measurements(self):
         self.register_valid_records()

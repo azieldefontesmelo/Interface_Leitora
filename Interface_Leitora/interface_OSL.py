@@ -26,6 +26,7 @@ from kivy.core.window import Window
 from kivy.lang import Builder
 from kivy.properties import BooleanProperty, NumericProperty, StringProperty
 from kivy.uix.button import Button
+from kivy.uix.checkbox import CheckBox
 from kivy.uix.togglebutton import ToggleButton
 from kivy.uix.screenmanager import ScreenManager
 from kivy.uix.screenmanager import Screen
@@ -44,11 +45,14 @@ from kivy.uix.treeview import TreeView, TreeViewLabel, TreeViewNode
 from app_paths import (
     USER_ASSETS_DIR,
     USER_DATA_DIR,
+    bundle_dir,
     ensure_user_data,
     resource_path,
 )
 
-APP_ICON_PATH = resource_path("assets/UI/iconeOSL.ico")
+# O ícone da janela deve vir do pacote, nunca de um arquivo antigo em
+# Documentos que possa ter sido copiado com outro conteúdo.
+APP_ICON_PATH = str(Path(bundle_dir()) / "assets" / "UI" / "iconeOSL.ico")
 Window.icon = APP_ICON_PATH
 if Window.initialized:
     Window.set_icon(APP_ICON_PATH)
@@ -721,6 +725,7 @@ class TelaPrincipalLeitora(Screen):
         self._bl_apply_button = None
         self._bl_selection_summary = None
         self.bl_selected_measurements = {"HP10": None, "HP007": None}
+        self.bl_selected_values = {"HP10": None, "HP007": None}
         Clock.schedule_once(self.atualizar_portas_serial, 0)
         Clock.schedule_once(self.atualizar_leitoras_cadastradas, 0)
         # O tamanho do conteúdo do ScrollView só fica definitivo após o
@@ -889,6 +894,7 @@ class TelaPrincipalLeitora(Screen):
         self.bl_hp007_target = 1
         self.bl_target_reached = False
         self.bl_selected_measurements = {"HP10": None, "HP007": None}
+        self.bl_selected_values = {"HP10": None, "HP007": None}
         try:
             self.ids.bl_repetition_input.text = "1"
         except KeyError:
@@ -1583,11 +1589,12 @@ class TelaPrincipalLeitora(Screen):
                 return False
 
         self.bl_selected_measurements = {"HP10": None, "HP007": None}
+        self.bl_selected_values = {"HP10": None, "HP007": None}
         content = BoxLayout(orientation="vertical", spacing=8, padding=10)
         content.add_widget(
             Label(
                 text=(
-                    "Escolha no máximo uma leitura por grandeza. "
+                    "Escolha uma leitura por grandeza ou a média das 3 menores. "
                     "Somente as escolhidas atualizarão o dosímetro."
                     if records
                     else "Nenhuma leitura BL concluída nesta sessão."
@@ -1607,6 +1614,43 @@ class TelaPrincipalLeitora(Screen):
             size_hint_y=None,
         )
         rows.bind(minimum_height=rows.setter("height"))
+        grouped_records = {"HP10": [], "HP007": []}
+        for record in records:
+            grouped_records[record["dose_channel"]].append(record)
+
+        for channel in ("HP10", "HP007"):
+            channel_records = grouped_records[channel]
+            if len(channel_records) < 3:
+                continue
+            lowest = sorted(
+                channel_records,
+                key=lambda item: float(item["raw_signal"]),
+            )[:3]
+            average = sum(
+                float(item["raw_signal"]) for item in lowest
+            ) / 3
+            average_button = ToggleButton(
+                text=(
+                    f"{self._nome_grandeza(channel)} • "
+                    f"Salvar média das 3 menores: {average:.10g} contagens"
+                ),
+                group=f"bl-{self.active_test_session_id}-{channel}",
+                allow_no_selection=True,
+                size_hint_y=None,
+                height="46dp",
+                halign="left",
+                valign="middle",
+            )
+            average_button.bind(
+                state=lambda _button, state, selected_channel=channel,
+                selected_average=average: self._selecionar_media_bl(
+                    selected_channel,
+                    selected_average,
+                    state,
+                )
+            )
+            rows.add_widget(average_button)
+
         sequence = {"HP10": 0, "HP007": 0}
         for record in records:
             channel = record["dose_channel"]
@@ -1707,17 +1751,42 @@ class TelaPrincipalLeitora(Screen):
     def _selecionar_leitura_bl(self, channel, measurement_id, state):
         if state == "down":
             self.bl_selected_measurements[channel] = int(measurement_id)
+            self.bl_selected_values[channel] = None
         elif self.bl_selected_measurements.get(channel) == int(measurement_id):
             self.bl_selected_measurements[channel] = None
+        self._atualizar_selecao_bl()
+
+    def _selecionar_media_bl(self, channel, average, state):
+        if state == "down":
+            self.bl_selected_measurements[channel] = None
+            self.bl_selected_values[channel] = float(average)
+        elif self.bl_selected_values.get(channel) == float(average):
+            self.bl_selected_values[channel] = None
+        self._atualizar_selecao_bl()
+
+    def _atualizar_selecao_bl(self):
         try:
-            hp10 = self.bl_selected_measurements["HP10"]
-            hp007 = self.bl_selected_measurements["HP007"]
-            self._bl_apply_button.disabled = hp10 is None and hp007 is None
-            self._bl_selection_summary.text = (
-                f"Hp(10): {'leitura ID ' + str(hp10) if hp10 else 'não alterar'}"
-                f"   •   Hp(0,07): "
-                f"{'leitura ID ' + str(hp007) if hp007 else 'não alterar'}"
+            descriptions = []
+            for channel, label in (("HP10", "Hp(10)"), ("HP007", "Hp(0,07)")):
+                value = self.bl_selected_values.get(channel)
+                measurement_id = self.bl_selected_measurements.get(channel)
+                if value is not None:
+                    description = f"média = {float(value):.10g}"
+                elif measurement_id is not None:
+                    description = f"leitura ID {measurement_id}"
+                else:
+                    description = "não alterar"
+                descriptions.append(f"{label}: {description}")
+            self._bl_apply_button.disabled = not any(
+                value is not None
+                for value in (
+                    self.bl_selected_values["HP10"],
+                    self.bl_selected_values["HP007"],
+                    self.bl_selected_measurements["HP10"],
+                    self.bl_selected_measurements["HP007"],
+                )
             )
+            self._bl_selection_summary.text = "   •   ".join(descriptions)
         except AttributeError:
             pass
 
@@ -1739,7 +1808,18 @@ class TelaPrincipalLeitora(Screen):
             if hp007_measurement_id is None
             else hp007_measurement_id
         )
-        if hp10_id is None and hp007_id is None:
+        hp10_value = (
+            self.bl_selected_values.get("HP10") if hp10_id is None else None
+        )
+        hp007_value = (
+            self.bl_selected_values.get("HP007") if hp007_id is None else None
+        )
+        if (
+            hp10_id is None
+            and hp007_id is None
+            and hp10_value is None
+            and hp007_value is None
+        ):
             self.atualizar_status("Selecione ao menos uma leitura para aplicar.")
             return None
         try:
@@ -1748,6 +1828,8 @@ class TelaPrincipalLeitora(Screen):
                 self.active_test_dosimeter_id,
                 hp10_measurement_id=hp10_id,
                 hp007_measurement_id=hp007_id,
+                hp10_counts=hp10_value,
+                hp007_counts=hp007_value,
             )
         except (sqlite3.Error, TypeError, ValueError) as error:
             self.atualizar_status(f"Erro ao aplicar BL: {error}")
@@ -2244,6 +2326,7 @@ class TelaBancoDados(Screen):
         self._history_rows = []
         self._loaded_database_tabs = set()
         self._pending_database_tabs = set()
+        self._export_popup_fields = None
 
     def on_kv_post(self, base_widget):
         focus_order = (
@@ -2423,10 +2506,12 @@ class TelaBancoDados(Screen):
         ):
             self.selecionar_dosimetro(rows[0])
 
-    def exportar_csv_dosimetros(self):
+    def exportar_csv_dosimetros(self, *, date_from=None, date_to=None):
         try:
             rows = self.obter_database().search_dosimeters_for_export(
                 text=self.ids.db_dosimeter_search.text,
+                date_from=date_from,
+                date_to=date_to,
             )
             dataframe = self._montar_dataframe_dosimetros(
                 rows,
@@ -3042,12 +3127,233 @@ class TelaBancoDados(Screen):
         )
         self.background_message = "Pesquisa concluída"
 
-    def exportar_csv_doses_pessoais(self):
+    def abrir_popup_exportacao(self, export_type):
+        configurations = {
+            "personal": {
+                "title": "Exportar Integral da Área",
+                "from_id": "db_personal_dose_from",
+                "to_id": "db_personal_dose_to",
+            },
+            "background": {
+                "title": "Exportar Linha de Base",
+                "from_id": "db_background_from",
+                "to_id": "db_background_to",
+            },
+            "measurements": {
+                "title": "Exportar medições",
+                "from_id": "db_history_from",
+                "to_id": "db_history_to",
+            },
+            "dosimeters": {
+                "title": "Exportar Dosímetros",
+                "from_id": None,
+                "to_id": None,
+            },
+        }
+        try:
+            configuration = configurations[export_type]
+        except KeyError as error:
+            raise ValueError("Tipo de exportação inválido") from error
+
+        initial = EntradaData(
+            text=(
+                self.ids[configuration["from_id"]].text
+                if configuration["from_id"]
+                else ""
+            ),
+            hint_text="dd/mm/aaaa",
+            multiline=False,
+            size_hint_y=None,
+            height="38dp",
+        )
+        final = EntradaData(
+            text=(
+                self.ids[configuration["to_id"]].text
+                if configuration["to_id"]
+                else ""
+            ),
+            hint_text="dd/mm/aaaa",
+            multiline=False,
+            size_hint_y=None,
+            height="38dp",
+        )
+        today = CheckBox(
+            active=False,
+            size_hint=(None, None),
+            width="32dp",
+            height="32dp",
+        )
+        error_message = Label(
+            text="",
+            color=(1, 0.45, 0.45, 1),
+            size_hint_y=None,
+            height="30dp",
+            text_size=(None, None),
+            halign="left",
+            valign="middle",
+        )
+
+        content = BoxLayout(orientation="vertical", spacing=10, padding=12)
+        content.add_widget(
+            Label(
+                text="Selecione o período dos dados que será exportado.",
+                size_hint_y=None,
+                height="32dp",
+                halign="left",
+                valign="middle",
+                text_size=(None, None),
+            )
+        )
+        period = GridLayout(
+            cols=2,
+            spacing=8,
+            size_hint_y=None,
+            height="92dp",
+        )
+        period.add_widget(Label(text="Data inicial", halign="left"))
+        period.add_widget(initial)
+        period.add_widget(Label(text="Data final", halign="left"))
+        period.add_widget(final)
+        content.add_widget(period)
+
+        today_option = BoxLayout(
+            spacing=8,
+            size_hint_y=None,
+            height="36dp",
+        )
+        today_option.add_widget(today)
+        today_option.add_widget(
+            Label(
+                text="Dados de hoje",
+                halign="left",
+                valign="middle",
+                text_size=(None, None),
+            )
+        )
+        content.add_widget(today_option)
+        content.add_widget(error_message)
+
+        actions = BoxLayout(size_hint_y=None, height="42dp", spacing=8)
+        cancel = Button(text="Cancelar")
+        export = Button(text="Exportar CSV")
+        actions.add_widget(cancel)
+        actions.add_widget(export)
+        content.add_widget(actions)
+
+        popup = Popup(
+            title=configuration["title"],
+            content=content,
+            size_hint=(0.62, 0.52),
+            auto_dismiss=False,
+        )
+        original_values = (initial.text, final.text)
+
+        def toggle_today(_checkbox, active):
+            if active:
+                today_text = datetime.now().strftime("%d/%m/%Y")
+                initial.text = today_text
+                final.text = today_text
+                initial.disabled = True
+                final.disabled = True
+            else:
+                initial.text, final.text = original_values
+                initial.disabled = False
+                final.disabled = False
+
+        today.bind(active=toggle_today)
+        cancel.bind(on_release=popup.dismiss)
+        export.bind(
+            on_release=lambda *_args: self._confirmar_exportacao(
+                popup,
+                export_type,
+                initial,
+                final,
+                today,
+                error_message,
+            )
+        )
+        self._export_popup_fields = {
+            "initial": initial,
+            "final": final,
+            "today": today,
+            "error": error_message,
+        }
+        popup.open()
+        return popup
+
+    def _confirmar_exportacao(
+        self,
+        popup,
+        export_type,
+        initial,
+        final,
+        today,
+        error_message,
+    ):
+        date_from = initial.text.strip()
+        date_to = final.text.strip()
+        if today.active:
+            today_text = datetime.now().strftime("%d/%m/%Y")
+            date_from = today_text
+            date_to = today_text
+        elif not date_from or not date_to:
+            error_message.text = (
+                "Informe a data inicial e a data final, ou marque "
+                "'Dados de hoje'."
+            )
+            return False
+        try:
+            initial_date = datetime.strptime(date_from, "%d/%m/%Y")
+            final_date = datetime.strptime(date_to, "%d/%m/%Y")
+        except ValueError:
+            error_message.text = "Use o formato dd/mm/aaaa nas duas datas."
+            return False
+        if final_date < initial_date:
+            error_message.text = (
+                "A data final não pode ser anterior à data inicial."
+            )
+            return False
+
+        export_methods = {
+            "personal": self.exportar_csv_doses_pessoais,
+            "background": self.exportar_csv_backgrounds,
+            "measurements": self.exportar_csv_historico,
+            "dosimeters": self.exportar_csv_dosimetros,
+        }
+        result = export_methods[export_type](
+            date_from=date_from,
+            date_to=date_to,
+        )
+        if result is None:
+            message_attributes = {
+                "personal": "personal_dose_message",
+                "background": "background_message",
+                "measurements": "history_message",
+                "dosimeters": "dosimeter_message",
+            }
+            error_message.text = getattr(
+                self,
+                message_attributes[export_type],
+            )
+            return False
+        popup.dismiss()
+        self._export_popup_fields = None
+        return result
+
+    def exportar_csv_doses_pessoais(self, *, date_from=None, date_to=None):
         try:
             rows = self.obter_database().search_personal_doses(
                 dosimeter_id=self.ids.db_personal_dose_dosimeter.text or None,
-                date_from=self.ids.db_personal_dose_from.text or None,
-                date_to=self.ids.db_personal_dose_to.text or None,
+                date_from=(
+                    self.ids.db_personal_dose_from.text or None
+                    if date_from is None
+                    else date_from
+                ),
+                date_to=(
+                    self.ids.db_personal_dose_to.text or None
+                    if date_to is None
+                    else date_to
+                ),
                 limit=10_000,
             )
             output = ASSETS_DIR / "exports" / datetime.now().strftime(
@@ -3069,12 +3375,20 @@ class TelaBancoDados(Screen):
             self.personal_dose_message = f"Erro ao exportar CSV: {error}"
             return None
 
-    def exportar_csv_backgrounds(self):
+    def exportar_csv_backgrounds(self, *, date_from=None, date_to=None):
         try:
             rows = self.obter_database().search_backgrounds(
                 dosimeter_id=self.ids.db_background_dosimeter.text or None,
-                date_from=self.ids.db_background_from.text or None,
-                date_to=self.ids.db_background_to.text or None,
+                date_from=(
+                    self.ids.db_background_from.text or None
+                    if date_from is None
+                    else date_from
+                ),
+                date_to=(
+                    self.ids.db_background_to.text or None
+                    if date_to is None
+                    else date_to
+                ),
                 limit=10_000,
             )
             output = ASSETS_DIR / "exports" / datetime.now().strftime(
@@ -3152,15 +3466,23 @@ class TelaBancoDados(Screen):
     def _channel_for_display(channel):
         return {"HP10": "Hp(10)", "HP007": "Hp(0,07)"}.get(channel, "—")
 
-    def exportar_csv_historico(self):
+    def exportar_csv_historico(self, *, date_from=None, date_to=None):
         try:
             mode = self.ids.db_history_mode.text
             rows = self.obter_database().search_measurements(
                 dosimeter_id=self.ids.db_history_dosimeter.text or None,
                 reader_id=self.ids.db_history_reader.text or None,
                 test_mode=None if mode == "Todos" else mode,
-                date_from=self.ids.db_history_from.text or None,
-                date_to=self.ids.db_history_to.text or None,
+                date_from=(
+                    self.ids.db_history_from.text or None
+                    if date_from is None
+                    else date_from
+                ),
+                date_to=(
+                    self.ids.db_history_to.text or None
+                    if date_to is None
+                    else date_to
+                ),
                 limit=10_000,
             )
             output = (
