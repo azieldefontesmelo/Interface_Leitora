@@ -7,9 +7,10 @@ from datetime import datetime, timedelta
 from pathlib import Path
 
 from kivy.clock import Clock
+from openpyxl import load_workbook
 
 import interface_OSL
-from database import Database
+from database import Database, NEED_RE_READ_STATUS
 from interface_OSL import AplicativoInterfaceOSL
 
 
@@ -92,6 +93,13 @@ class InterfaceModeTestCase(unittest.TestCase):
         self.main.active_test_dosimeter_id = None
         self.main.active_test_reading_type = None
         self.main.acquisition_active = False
+        self.main.ref_light_mode_active = False
+        self.main.ref_light_reading_active = False
+        self.main.ref_light_readings = []
+        self.main.ref_light_repetition_count = 0
+        self.main.ref_light_target = 1
+        self.main.ref_light_target_reached = False
+        self.main.ref_light_average = 0
         self.main.test_session_active = False
         self.main.baseline_mode_active = False
         interface_OSL.SETTINGS_PATH.unlink(missing_ok=True)
@@ -744,6 +752,118 @@ class InterfaceModeTestCase(unittest.TestCase):
         self.assertEqual(self.main.ids.hp10_button.text, "Hp(10) concluído  ✓")
         self.assertFalse(self.main.ids.hp007_button.disabled)
 
+    def test_high_dose_requires_new_reading_and_persists_tag(self):
+        self.main.selecionar_modo("DOSIMETER_ID")
+        self.main.serial_connection = FakeSerial()
+        self.main.ids.reader_spinner.text = "3001A01"
+        self.main.ids.dosimeter_id_input.text = "0123456789"
+        self.assertTrue(self.main.confirmar_codigo_dosimetro())
+
+        self.main.botao_leitura()
+        self.main.processar_frame("#L1%A50000")
+        self.main.processar_frame("#L1%E45")
+        self.main.f_fechar_log = True
+        self.main.processar_frame("#L1%D471")
+
+        self.assertIsNone(self.main.re_read_popup)
+        self.main.botao_leitura()
+        self.main.processar_frame("#L1%A200")
+        self.main.processar_frame("#L1%E45")
+        self.main.f_fechar_log = True
+        self.main.processar_frame("#L1%D471")
+
+        history = self.database.search_personal_doses()
+        self.assertEqual(len(history), 1)
+        self.assertGreaterEqual(history[0]["dose_dos"], 2)
+        self.assertEqual(history[0]["status_dos"], NEED_RE_READ_STATUS)
+        popup = self.main.re_read_popup
+        self.assertIsNotNone(popup)
+        popup_text = "\n".join(
+            child.text
+            for child in popup.content.children
+            if hasattr(child, "text")
+        )
+        self.assertIn("Refaça a leitura", popup_text)
+        self.assertIn(NEED_RE_READ_STATUS, popup_text)
+        popup.dismiss()
+
+    def test_low_dose_asks_to_save_baseline_counts(self):
+        self.main.selecionar_modo("DOSIMETER_ID")
+        self.main.serial_connection = FakeSerial()
+        self.main.ids.reader_spinner.text = "3001A01"
+        self.main.ids.dosimeter_id_input.text = "0123456789"
+        self.assertTrue(self.main.confirmar_codigo_dosimetro())
+
+        self.main.botao_leitura()
+        self.main.processar_frame("#L1%A101")
+        self.main.processar_frame("#L1%E45")
+        self.main.f_fechar_log = True
+        self.main.processar_frame("#L1%D471")
+
+        self.main.botao_leitura()
+        self.main.processar_frame("#L1%A201")
+        self.main.processar_frame("#L1%E45")
+        self.main.f_fechar_log = True
+        self.main.processar_frame("#L1%D471")
+
+        history = self.database.search_personal_doses()
+        self.assertEqual(len(history), 1)
+        self.assertEqual(history[0]["status_dos"], "Need to Erase")
+        popup = self.main.baseline_save_popup
+        self.assertIsNotNone(popup)
+        popup_text = "\n".join(
+            child.text
+            for child in popup.content.children
+            if hasattr(child, "text")
+        )
+        self.assertIn("salvar esta leitura como baseline", popup_text)
+
+        self.assertTrue(
+            self.main._salvar_dose_como_baseline(popup, history[0])
+        )
+        background = self.database.get_latest_background("0123456789")
+        self.assertEqual(background["hp10_counts"], 101)
+        self.assertEqual(background["hp007_counts"], 201)
+        self.assertEqual(self.database.get_dosimeter("0123456789")["bl_hp10"], 101)
+        self.assertEqual(self.database.get_dosimeter("0123456789")["bl_hp007"], 201)
+        self.assertIsNone(self.main.baseline_save_popup)
+
+    def test_ref_light_repetitions_are_averaged_and_exported_to_xlsx(self):
+        xlsx_path = self.root_path / self._testMethodName / "documentos" / "ref_light.xlsx"
+        previous_xlsx_path = interface_OSL.REF_LIGHT_XLSX_PATH
+        interface_OSL.REF_LIGHT_XLSX_PATH = xlsx_path
+        try:
+            self.main.serial_connection = FakeSerial()
+            self.assertTrue(self.main.botao_ref_light())
+            self.main.ids.ref_light_repetition_input.text = "120"
+            self.assertEqual(self.main.ref_light_target, 120)
+            self.main.ids.ref_light_repetition_input.text = "3"
+            self.assertEqual(self.main.ref_light_target, 3)
+
+            for value in (100, 200, 300):
+                self.main.botao_leitura()
+                self.assertTrue(self.main.ref_light_reading_active)
+                self.main.f_fechar_log = True
+                self.main.processar_frame(f"#L1%D{value}")
+
+            self.assertFalse(self.main.ref_light_mode_active)
+            self.assertEqual(self.main.ref_light_readings, [100.0, 200.0, 300.0])
+            self.assertEqual(self.main.ref_light_average, 200.0)
+            self.assertTrue(xlsx_path.is_file())
+
+            worksheet = load_workbook(xlsx_path, data_only=True).active
+            self.assertEqual(
+                [worksheet.cell(1, column).value for column in range(1, 6)],
+                ["Data", "Ref Light 1", "Ref Light 2", "Ref Light 3", "Média"],
+            )
+            self.assertEqual(
+                [worksheet.cell(2, column).value for column in range(2, 6)],
+                [100.0, 200.0, 300.0, 200.0],
+            )
+            self.assertIsInstance(worksheet.cell(2, 1).value, datetime)
+        finally:
+            interface_OSL.REF_LIGHT_XLSX_PATH = previous_xlsx_path
+
     def test_055_post_erase_reading_is_saved_as_background(self):
         self.main.selecionar_modo("DOSIMETER_ID")
         self.main.serial_connection = FakeSerial()
@@ -860,6 +980,32 @@ class InterfaceModeTestCase(unittest.TestCase):
         self.assertFalse(self.main.baseline_mode_active)
         self.assertIsNone(self.main.bl_selection_popup)
 
+    def test_automatic_bl_displays_dose_but_persists_counts(self):
+        self.main.ids.fcal_textInput.text = "1"
+        self.main.ids.fenerg_textInput.text = "1"
+        self.main.alternar_modo_bl()
+        self.main.selecionar_modo("DOSIMETER_ID")
+        self.main.serial_connection = FakeSerial()
+        self.main.botao_apagar()
+        self.main.ids.reader_spinner.text = "3001A01"
+        self.main.ids.dosimeter_id_input.text = "0123456789"
+        self.assertTrue(self.main.confirmar_codigo_dosimetro())
+
+        self.main.botao_leitura()
+        measurement_id = self.main.current_measurement_id
+        self.assertEqual(self.main.ids.LabelDose.text, "Dose (mSv)")
+        self.main.processar_frame("#L1%A1733")
+        self.main.processar_frame("#L1%E45")
+        self.main.f_fechar_log = True
+        self.main.processar_frame("#L1%D471")
+
+        expected_dose = self.main.formatar_dose(1733 * 0.000033 * 1.25)
+        self.assertEqual(self.main.ids.label_dose.text, expected_dose)
+        record = self.database.get_measurement(measurement_id)
+        self.assertEqual(record["reading_type"], "BACKGROUND")
+        self.assertEqual(record["raw_signal"], 1733)
+        self.assertEqual(record["dose_msv"], 0)
+
     def test_06_stop_marks_measurement_as_interrupted(self):
         self.main.selecionar_modo("MANUAL")
         self.main.serial_connection = FakeSerial()
@@ -875,6 +1021,45 @@ class InterfaceModeTestCase(unittest.TestCase):
             interface_OSL.COMANDOS_SUDO["stop"].encode("ascii"),
             self.main.serial_connection.writes,
         )
+
+    def test_missing_first_frame_does_not_leave_acquisition_stuck(self):
+        self.main.selecionar_modo("MANUAL")
+        self.main.serial_connection = FakeSerial()
+        self.main.ids.nome_arquivo_input.text = "serial-timeout"
+        self.main.ids.branco_textInput.text = "0"
+        self.main.botao_leitura()
+        measurement_id = self.main.current_measurement_id
+
+        self.main._timeout_primeiro_frame(0)
+
+        record = self.database.get_measurement(measurement_id)
+        self.assertEqual(record["status"], "ERRO")
+        self.assertIn("Nenhum frame recebido", record["notes"])
+        self.assertFalse(self.main.acquisition_active)
+        self.assertIsNone(self.main.log_arquivo)
+        self.assertIn(
+            interface_OSL.COMANDOS_SUDO["stop"].encode("ascii"),
+            self.main.serial_connection.writes,
+        )
+
+    def test_equipment_end_frame_finishes_reading(self):
+        self.main.selecionar_modo("MANUAL")
+        self.main.serial_connection = FakeSerial()
+        self.main.ids.nome_arquivo_input.text = "serial-end-frame"
+        self.main.ids.branco_textInput.text = "0"
+        self.main.botao_leitura()
+        measurement_id = self.main.current_measurement_id
+        self.main.f_fechar_log = False
+
+        self.main.processar_frame("#L1%A1733")
+        self.main.processar_frame("#L1%E45")
+        self.main.processar_frame("#L1%D471")
+        self.main.processar_frame("#L1%I0010000")
+
+        record = self.database.get_measurement(measurement_id)
+        self.assertEqual(record["status"], "CONCLUIDO")
+        self.assertIn("Fim sinalizado", record["notes"])
+        self.assertIsNone(self.main.current_measurement_id)
 
 
 if __name__ == "__main__":

@@ -1,4 +1,4 @@
-# OSLMeter V4.0
+# OSLMeter V4.1
 
 Aplicação desktop em **Python + Kivy** para controlar uma leitora OSL
 (*Optically Stimulated Luminescence*) pela porta serial, calcular doses e
@@ -18,6 +18,8 @@ O sistema trabalha em dois modos:
 
 - Comunicação serial a `115200 baud`.
 - Start, Stop, Erase, Ref Light e configuração da leitora.
+- Modo Ref Light com quantidade livre de repetições, média automática e
+  exportação para `Documentos/OSLMeter/ref_light.xlsx`.
 - Leitura de código de barras de 10 dígitos.
 - Grandezas Hp(10) e Hp(0,07), com ECC e BC próprios para cada uma.
 - RCF carregado do cadastro da leitora.
@@ -211,14 +213,29 @@ Entre os dados gravados estão:
 
 Guarda o resultado consolidado da sessão de Integral da Área. O registro só é
 criado quando existem aquisições `CONCLUIDO` para HP10 e HP007 na mesma sessão.
-Mantém os dois valores, os IDs das duas medições e o status `Need to Erase`.
+Mantém os dois valores, os IDs das duas medições e calcula o status da dose:
+`Need to Erase` para valores menores que 0,01 mSv, `Ready to Use` entre 0,01
+e 2 mSv, e `Need to Re-read` para valores maiores ou iguais a 2 mSv. Para
+doses abaixo de 0,01 mSv, a interface pergunta se a leitura deve ser salva
+como linha de base usando as contagens; para doses a partir de 2 mSv, alerta
+que a leitura deve ser refeita.
+
+### Modo Ref Light
+
+O botão `Ref Light` ativa o modo de repetição. Informe a quantidade desejada,
+pressione `Start` para cada aquisição e finalize automaticamente ao atingir a
+meta, ou use `Finalizar Ref Light` para encerrar antes dela. Cada sessão ocupa
+uma linha em `Documentos/OSLMeter/ref_light.xlsx`: a primeira coluna é a data,
+as colunas seguintes são as leituras individuais e a última coluna é a média.
 
 #### `historico_branco`
 
 Guarda uma única linha com o resultado consolidado da sessão iniciada após
 Erase. As repetições usadas para escolher o BL permanecem em `measurements`,
 mas não são duplicadas no histórico final. Também exige as duas grandezas
-concluídas e usa o status `Ready to Use`.
+concluídas e usa o status `Ready to Use`. Uma leitura pessoal abaixo de
+0,01 mSv que seja confirmada como linha de base também gera esse histórico
+com as contagens brutas das duas grandezas.
 
 `historico_dose` segue a mesma regra: cada `test_session_id` gera no máximo
 uma linha, protegida por índice único no SQLite. A abertura repetida de uma

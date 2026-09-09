@@ -2119,6 +2119,263 @@ class Database:
             ).fetchone()
         return dict(history)
 
+    def save_measurement_as_baseline(
+        self,
+        measurement_id: int,
+    ) -> dict[str, Any]:
+        """Save one completed dosimeter reading as its raw-count BL."""
+        clean_measurement_id = int(measurement_id)
+        with self.connect() as connection:
+            measurement = connection.execute(
+                "SELECT * FROM measurements WHERE id = ?",
+                (clean_measurement_id,),
+            ).fetchone()
+            if measurement is None:
+                raise ValueError("Leitura nÃ£o encontrada")
+            if (
+                measurement["test_mode"] != "DOSIMETER_ID"
+                or measurement["reading_type"] != "PERSONAL_DOSE"
+                or measurement["status"] != "CONCLUIDO"
+                or measurement["dose_channel"] not in VALID_DOSE_CHANNELS
+                or not measurement["dosimeter_id"]
+            ):
+                raise ValueError(
+                    "Somente uma leitura concluÃ­da de dosÃ­metro pode ser "
+                    "salva como baseline"
+                )
+
+            existing = connection.execute(
+                "SELECT * FROM historico_branco WHERE measurement_id = ?",
+                (clean_measurement_id,),
+            ).fetchone()
+            if existing is not None:
+                return dict(existing)
+
+            clean_dosimeter_id = normalize_dosimeter_id(
+                measurement["dosimeter_id"]
+            )
+            dosimeter = connection.execute(
+                "SELECT * FROM dosimeters WHERE dosimeter_id = ?",
+                (clean_dosimeter_id,),
+            ).fetchone()
+            if dosimeter is None:
+                raise ValueError("DosÃ­metro nÃ£o cadastrado")
+
+            raw_signal = _non_negative_number(
+                measurement["raw_signal"],
+                "Contagens da leitura",
+            )
+            channel = measurement["dose_channel"]
+            hp10_counts = (
+                raw_signal
+                if channel == "HP10"
+                else float(dosimeter["bl_hp10"])
+            )
+            hp007_counts = (
+                raw_signal
+                if channel == "HP007"
+                else float(dosimeter["bl_hp007"])
+            )
+            applied_at = utc_now()
+            connection.execute(
+                """
+                UPDATE dosimeters
+                SET bl_hp10 = ?, bl_hp007 = ?, updated_at = ?
+                WHERE dosimeter_id = ?
+                """,
+                (
+                    hp10_counts,
+                    hp007_counts,
+                    applied_at,
+                    clean_dosimeter_id,
+                ),
+            )
+
+            baseline_session_id = (
+                f"baseline-from-measurement-{clean_measurement_id}-"
+                f"{uuid4().hex}"
+            )
+            connection.execute(
+                """
+                INSERT INTO historico_branco (
+                    measurement_id, test_session_id,
+                    hp10_measurement_id, hp007_measurement_id,
+                    time_bg, dosimeter_id, hp10_counts, hp007_counts,
+                    counts, status_bg, created_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    clean_measurement_id,
+                    baseline_session_id,
+                    clean_measurement_id if channel == "HP10" else None,
+                    clean_measurement_id if channel == "HP007" else None,
+                    measurement["measured_at"],
+                    clean_dosimeter_id,
+                    hp10_counts,
+                    hp007_counts,
+                    max(hp10_counts, hp007_counts),
+                    BACKGROUND_STATUS,
+                    applied_at,
+                ),
+            )
+
+            note = f"Salva como BL {channel} em {applied_at}"
+            existing_note = str(measurement["notes"] or "").strip()
+            connection.execute(
+                """
+                UPDATE measurements
+                SET notes = ?, updated_at = ?
+                WHERE id = ?
+                """,
+                (
+                    f"{existing_note}; {note}" if existing_note else note,
+                    applied_at,
+                    clean_measurement_id,
+                ),
+            )
+            history = connection.execute(
+                "SELECT * FROM historico_branco WHERE measurement_id = ?",
+                (clean_measurement_id,),
+            ).fetchone()
+        return dict(history)
+
+    def save_personal_dose_as_baseline(
+        self,
+        history_id: int,
+    ) -> dict[str, Any]:
+        """Save a low-dose personal reading pair as raw-count BL."""
+        clean_history_id = int(history_id)
+        with self.connect() as connection:
+            history = connection.execute(
+                "SELECT * FROM historico_dose WHERE id = ?",
+                (clean_history_id,),
+            ).fetchone()
+            if history is None:
+                raise ValueError("Histórico de dose não encontrado")
+            if (
+                history["status_dos"] != PERSONAL_DOSE_STATUS
+                or float(history["dose_dos"]) >= 0.01
+            ):
+                raise ValueError(
+                    "Somente uma dose inferior a 0,01 mSv pode ser salva como baseline"
+                )
+
+            measurements = {}
+            for channel, measurement_id in (
+                ("HP10", history["hp10_measurement_id"]),
+                ("HP007", history["hp007_measurement_id"]),
+            ):
+                if measurement_id is None:
+                    raise ValueError(
+                        f"Leitura {channel} ausente no histórico de dose"
+                    )
+                measurement = connection.execute(
+                    "SELECT * FROM measurements WHERE id = ?",
+                    (int(measurement_id),),
+                ).fetchone()
+                if measurement is None or (
+                    measurement["test_session_id"] != history["test_session_id"]
+                    or measurement["dosimeter_id"] != history["dosimeter_id"]
+                    or measurement["test_mode"] != "DOSIMETER_ID"
+                    or measurement["reading_type"] != "PERSONAL_DOSE"
+                    or measurement["dose_channel"] != channel
+                    or measurement["status"] != "CONCLUIDO"
+                ):
+                    raise ValueError(
+                        f"Leitura {channel} inválida para salvar como baseline"
+                    )
+                measurements[channel] = measurement
+
+            existing = connection.execute(
+                """
+                SELECT *
+                FROM historico_branco
+                WHERE hp10_measurement_id = ?
+                  AND hp007_measurement_id = ?
+                """,
+                (
+                    measurements["HP10"]["id"],
+                    measurements["HP007"]["id"],
+                ),
+            ).fetchone()
+            if existing is not None:
+                return dict(existing)
+
+            hp10_counts = _non_negative_number(
+                measurements["HP10"]["raw_signal"],
+                "Contagens Hp(10)",
+            )
+            hp007_counts = _non_negative_number(
+                measurements["HP007"]["raw_signal"],
+                "Contagens Hp(0,07)",
+            )
+            applied_at = utc_now()
+            baseline_session_id = (
+                f"baseline-from-dose-{clean_history_id}-{uuid4().hex}"
+            )
+            connection.execute(
+                """
+                UPDATE dosimeters
+                SET bl_hp10 = ?, bl_hp007 = ?, updated_at = ?
+                WHERE dosimeter_id = ?
+                """,
+                (
+                    hp10_counts,
+                    hp007_counts,
+                    applied_at,
+                    history["dosimeter_id"],
+                ),
+            )
+            connection.execute(
+                """
+                INSERT INTO historico_branco (
+                    measurement_id, test_session_id,
+                    hp10_measurement_id, hp007_measurement_id,
+                    time_bg, dosimeter_id, hp10_counts, hp007_counts,
+                    counts, status_bg, created_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    measurements["HP007"]["id"],
+                    baseline_session_id,
+                    measurements["HP10"]["id"],
+                    measurements["HP007"]["id"],
+                    history["time_dos"],
+                    history["dosimeter_id"],
+                    hp10_counts,
+                    hp007_counts,
+                    max(hp10_counts, hp007_counts),
+                    BACKGROUND_STATUS,
+                    applied_at,
+                ),
+            )
+            for channel, measurement in measurements.items():
+                note = f"Salva como BL {channel} a partir da dose em {applied_at}"
+                existing_note = str(measurement["notes"] or "").strip()
+                connection.execute(
+                    """
+                    UPDATE measurements
+                    SET notes = ?, updated_at = ?
+                    WHERE id = ?
+                    """,
+                    (
+                        f"{existing_note}; {note}" if existing_note else note,
+                        applied_at,
+                        measurement["id"],
+                    ),
+                )
+            baseline = connection.execute(
+                """
+                SELECT *
+                FROM historico_branco
+                WHERE test_session_id = ?
+                """,
+                (baseline_session_id,),
+            ).fetchone()
+        return dict(baseline)
+
     def sync_measurement_history(
         self,
         measurement_id: int,

@@ -393,6 +393,64 @@ class DatabaseTestCase(unittest.TestCase):
             "CONCLUIDO",
         )
 
+    def test_completed_dosimeter_reading_can_be_saved_as_baseline(self):
+        self.register_valid_records()
+        measurement_id = self.add_valid_measurement(
+            raw_signal=288556,
+            dose_msv=9,
+        )
+
+        history = self.database.save_measurement_as_baseline(measurement_id)
+
+        self.assertEqual(history["measurement_id"], measurement_id)
+        self.assertEqual(history["hp10_counts"], 288556)
+        self.assertEqual(history["hp007_counts"], 200)
+        dosimeter = self.database.get_dosimeter("0123456789")
+        self.assertEqual(dosimeter["bl_hp10"], 288556)
+        self.assertEqual(dosimeter["bl_hp007"], 200)
+        latest = self.database.get_latest_background("0123456789")
+        self.assertEqual(latest["hp10_counts"], 288556)
+        self.assertEqual(latest["hp007_counts"], 200)
+        self.assertIn(
+            "Salva como BL HP10",
+            self.database.get_measurement(measurement_id)["notes"],
+        )
+
+    def test_only_completed_dosimeter_readings_can_be_saved_as_baseline(self):
+        self.register_valid_records()
+        measurement_id = self.add_valid_measurement(test_mode="MANUAL")
+
+        with self.assertRaises(ValueError):
+            self.database.save_measurement_as_baseline(measurement_id)
+
+    def test_low_personal_dose_can_be_saved_as_two_channel_baseline(self):
+        self.register_valid_records()
+        session_id = uuid4().hex
+        hp10_id = self.add_valid_measurement(
+            test_session_id=session_id,
+            dose_channel="HP10",
+            raw_signal=101,
+            dose_msv=0.00004125,
+        )
+        hp007_id = self.add_valid_measurement(
+            test_session_id=session_id,
+            dose_channel="HP007",
+            raw_signal=201,
+            dose_msv=0.0000495,
+        )
+
+        history = self.database.sync_measurement_history(hp10_id)
+        self.assertEqual(history["status_dos"], PERSONAL_DOSE_STATUS)
+        baseline = self.database.save_personal_dose_as_baseline(history["id"])
+
+        self.assertEqual(baseline["hp10_measurement_id"], hp10_id)
+        self.assertEqual(baseline["hp007_measurement_id"], hp007_id)
+        self.assertEqual(baseline["hp10_counts"], 101)
+        self.assertEqual(baseline["hp007_counts"], 201)
+        dosimeter = self.database.get_dosimeter("0123456789")
+        self.assertEqual(dosimeter["bl_hp10"], 101)
+        self.assertEqual(dosimeter["bl_hp007"], 201)
+
     def test_history_filters_csv_and_backup(self):
         self.register_valid_records()
         wanted_id = self.add_valid_measurement()

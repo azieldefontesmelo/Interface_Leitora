@@ -280,10 +280,10 @@ ScreenManager:
 
                         Button:
                             id: start_button
-                            text: "Start"
+                            text: "Lendo Ref Light..." if root.ref_light_reading_active else "Start"
                             size_hint_x: None
                             width: "106dp"
-                            disabled: (root.test_mode == "DOSIMETER_ID" and not root.start_allowed) or (root.baseline_mode_active and root.bl_target_reached)
+                            disabled: (root.test_mode == "DOSIMETER_ID" and not root.start_allowed) or (root.baseline_mode_active and root.bl_target_reached) or (root.ref_light_mode_active and root.ref_light_target_reached)
                             on_release: app.root.get_screen("main").botao_leitura()
 
                         Button:
@@ -550,11 +550,45 @@ ScreenManager:
                     background_normal: ""
                     background_down: ""
                     background_color: (0.08, 0.55, 0.95, 1) if root.baseline_mode_active else (0.36, 0.36, 0.36, 1)
+                    disabled: root.ref_light_mode_active or root.acquisition_active
                     on_release: app.root.get_screen("main").botao_apagar()
 
                 Button:
-                    text: "Ref Light"
+                    text: "Finalizar Ref Light" if root.ref_light_mode_active else "Ref Light"
+                    disabled: root.baseline_mode_active or root.test_session_active or root.acquisition_active
                     on_release: app.root.get_screen("main").botao_ref_light()
+
+            BoxLayout:
+                id: ref_light_repetition_controls
+                size_hint_y: None
+                height: "40dp" if root.ref_light_mode_active else 0
+                spacing: 8
+                opacity: 1 if root.ref_light_mode_active else 0
+                disabled: not root.ref_light_mode_active
+
+                Label:
+                    text: "Repetições Ref Light"
+                    size_hint_x: None
+                    width: "170dp"
+                    text_size: self.size
+                    halign: "left"
+                    valign: "middle"
+
+                TextInput:
+                    id: ref_light_repetition_input
+                    text: "1"
+                    input_filter: "int"
+                    multiline: False
+                    size_hint_x: None
+                    width: "70dp"
+                    disabled: root.acquisition_active
+                    on_text: root.definir_repeticoes_ref_light(self.text)
+
+                Label:
+                    text: "{} / {}   Média: {}".format(root.ref_light_repetition_count, root.ref_light_target, root.ref_light_average)
+                    text_size: self.size
+                    halign: "left"
+                    valign: "middle"
 
             TabbedPanel:
                 do_default_tab: False

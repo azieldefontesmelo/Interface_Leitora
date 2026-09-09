@@ -7,7 +7,8 @@ from collections import deque
 from datetime import datetime
 from math import hypot
 from pathlib import Path
-from threading import Thread
+from queue import Empty, Queue
+from threading import Event, Lock, Thread, current_thread
 from uuid import uuid4
 
 import serial
@@ -58,7 +59,7 @@ if Window.initialized:
     Window.set_icon(APP_ICON_PATH)
 
 from conversor import escrever_csv
-from database import Database
+from database import Database, NEED_RE_READ_STATUS, PERSONAL_DOSE_STATUS
 from measurement_workflow import (
     append_filename_observation,
     calculate_dose,
@@ -68,6 +69,8 @@ from measurement_workflow import (
     scanner_text,
 )
 from Plot_grafico import gerar_grafico
+from ref_light_export import REF_LIGHT_XLSX_PATH, append_ref_light_session
+from serial_protocol import SerialFrameDecoder
 
 
 NomeArquivoBL = BoxLayout(orientation="vertical")
@@ -90,6 +93,13 @@ btn.bind(on_release=popupNomeArquivo.dismiss)
 BAUD_RATE = 115200
 PORTAS_SERIAL = []
 DATABASE_PAGE_SIZE = 100
+PORTA_SERIAL_PREFERIDA = "COM9"
+SERIAL_READ_TIMEOUT = 0.05
+SERIAL_READ_CHUNK_SIZE = 4096
+SERIAL_UI_POLL_SECONDS = 0.01
+SERIAL_MAX_FRAMES_PER_UI_TICK = 500
+SERIAL_FIRST_FRAME_TIMEOUT = 5.0
+SERIAL_SILENCE_TIMEOUT = 2.0
 
 ASSETS_DIR = USER_ASSETS_DIR
 TESTES_DIR = ASSETS_DIR / "testes"
@@ -678,6 +688,12 @@ class TelaPrincipalLeitora(Screen):
     bl_hp10_target = NumericProperty(1)
     bl_hp007_target = NumericProperty(1)
     bl_target_reached = BooleanProperty(False)
+    ref_light_mode_active = BooleanProperty(False)
+    ref_light_reading_active = BooleanProperty(False)
+    ref_light_repetition_count = NumericProperty(0)
+    ref_light_target = NumericProperty(1)
+    ref_light_target_reached = BooleanProperty(False)
+    ref_light_average = NumericProperty(0)
 
     soma = 0
     contador = 0.1
@@ -706,6 +722,19 @@ class TelaPrincipalLeitora(Screen):
         self.caminho_arquivo = None
         self.serial_connection = None
         self.buffer_serial = ""
+        self.serial_reader_thread = None
+        self.serial_stop_event = Event()
+        self.serial_frame_queue = Queue()
+        self.serial_decoder = SerialFrameDecoder()
+        self.serial_log_lock = Lock()
+        self.serial_bytes_received = 0
+        self.serial_frames_received = 0
+        self.serial_invalid_frames = 0
+        self.serial_last_error = None
+        self.serial_first_frame_event = None
+        self.serial_silence_event = None
+        self.serial_sample_received = False
+        self._respondeu_solicitacao_parametros = False
         self.valor_count = 0
         self.valor_current = 0
         self.valor_light = 0
@@ -722,6 +751,9 @@ class TelaPrincipalLeitora(Screen):
         self.active_test_dosimeter_id = None
         self.active_test_reading_type = None
         self.bl_selection_popup = None
+        self.re_read_popup = None
+        self.baseline_save_popup = None
+        self.ref_light_readings = []
         self._bl_apply_button = None
         self._bl_selection_summary = None
         self.bl_selected_measurements = {"HP10": None, "HP007": None}
@@ -757,6 +789,11 @@ class TelaPrincipalLeitora(Screen):
                 "Finalize ou interrompa a leitura antes de trocar o modo."
             )
             return
+        if self.ref_light_mode_active:
+            self.atualizar_status(
+                "Finalize o modo Ref Light antes de trocar o modo."
+            )
+            return
         if self.baseline_mode_active and normalized_mode != self.test_mode:
             self.atualizar_status(
                 "Finalize ou cancele o modo BL antes de trocar o modo."
@@ -788,6 +825,11 @@ class TelaPrincipalLeitora(Screen):
         if self.log_arquivo:
             self.atualizar_status(
                 "Finalize ou interrompa a leitura antes de apagar."
+            )
+            return
+        if self.ref_light_mode_active:
+            self.atualizar_status(
+                "Finalize o modo Ref Light antes de apagar."
             )
             return
         if self.test_mode == "DOSIMETER_ID":
@@ -938,6 +980,158 @@ class TelaPrincipalLeitora(Screen):
         self.bl_target_reached = (
             self._contagem_bl_atual() >= self._meta_bl_atual()
         )
+
+    def _resetar_estado_ref_light(self):
+        self.ref_light_readings = []
+        self.ref_light_repetition_count = 0
+        self.ref_light_target = 1
+        self.ref_light_target_reached = False
+        self.ref_light_average = 0
+        try:
+            self.ids.ref_light_repetition_input.text = "1"
+        except KeyError:
+            pass
+
+    def definir_repeticoes_ref_light(self, value):
+        if not self.ref_light_mode_active:
+            return
+        text = str(value).strip()
+        if not text:
+            return
+        try:
+            target = int(text)
+        except ValueError:
+            return
+        if target < 1:
+            target = 1
+        self.ref_light_target = target
+        self.ref_light_target_reached = (
+            self.ref_light_repetition_count >= self.ref_light_target
+        )
+        self._atualizar_status_ref_light()
+
+    def _atualizar_status_ref_light(self):
+        if not self.ref_light_mode_active:
+            return
+        count = int(self.ref_light_repetition_count)
+        target = int(self.ref_light_target)
+        if self.ref_light_reading_active:
+            self.dosimeter_status = (
+                f"MODO REF LIGHT • leitura {count + 1}/{target} em andamento"
+            )
+        elif self.ref_light_target_reached:
+            self.dosimeter_status = (
+                f"MODO REF LIGHT • {count}/{target} • finalizando"
+            )
+        else:
+            self.dosimeter_status = (
+                f"MODO REF LIGHT • {count}/{target} • pressione Start"
+            )
+
+    def _iniciar_ref_light_leitura(self):
+        if not self.ref_light_mode_active:
+            return False
+        if self.ref_light_target_reached:
+            self.atualizar_status(
+                "A quantidade de repetições foi atingida; finalize o modo Ref Light."
+            )
+            return False
+        if self.ref_light_reading_active or self.acquisition_active:
+            self.atualizar_status("Já existe uma leitura Ref Light em andamento.")
+            return False
+        if not self.serial_aberta():
+            self.atualizar_status("Serial desconectada. Verifique a porta.")
+            lbl_erro.text = "Connect to OSL System!"
+            popupNomeArquivo.open()
+            return False
+
+        self.string_log = ""
+        self.ids.label_dose.text = "0.000"
+        self.ids.label_current.text = "0"
+        self.ids.label_light.text = "0"
+        self.ids.label_count.text = "0"
+        self.ids.LabelDose.text = "Integral Light"
+        self.soma = 0
+        self.soma_luz = 0
+        self.contador = 0
+        self.f_fechar_log = False
+        self.f_luz_ref = True
+        self.ref_light_reading_active = True
+        self.acquisition_active = True
+        self.nova_linha = True
+        try:
+            self.ids.grafico_tempo_real.limpar()
+        except (AttributeError, KeyError):
+            pass
+        self._atualizar_status_ref_light()
+        self._armar_watchdog_primeiro_frame()
+        self.enviar_comando_sudo("leitura")
+        return True
+
+    def _finalizar_ref_light_leitura(self, status="CONCLUIDO", notes=None):
+        if not self.ref_light_reading_active:
+            return False
+        self._cancelar_watchdogs_serial()
+        self.ref_light_reading_active = False
+        self.acquisition_active = False
+        self.f_luz_ref = False
+        self.f_fechar_log = False
+
+        if status != "CONCLUIDO":
+            self.atualizar_status(
+                f"Leitura Ref Light interrompida: {notes or status}."
+            )
+            self._atualizar_status_ref_light()
+            return False
+
+        self.ref_light_readings.append(float(self.soma_luz))
+        self.ref_light_repetition_count = len(self.ref_light_readings)
+        self.ref_light_average = sum(self.ref_light_readings) / len(
+            self.ref_light_readings
+        )
+        self.ids.label_dose.text = self.formatar_dose(self.soma_luz)
+        self.ref_light_target_reached = (
+            self.ref_light_repetition_count >= self.ref_light_target
+        )
+        self._atualizar_status_ref_light()
+        if self.ref_light_target_reached:
+            self._finalizar_modo_ref_light()
+        return True
+
+    def _finalizar_modo_ref_light(self):
+        if self.ref_light_reading_active:
+            self.atualizar_status(
+                "Aguarde o término da leitura Ref Light antes de finalizar."
+            )
+            return False
+        if not self.ref_light_readings:
+            self.ref_light_mode_active = False
+            self.ref_light_target_reached = False
+            self.dosimeter_status = "Modo Ref Light encerrado sem leituras."
+            return False
+
+        try:
+            workbook_path, average = append_ref_light_session(
+                self.ref_light_readings,
+                output_path=REF_LIGHT_XLSX_PATH,
+            )
+        except (OSError, RuntimeError, TypeError, ValueError) as error:
+            self.atualizar_status(f"Erro ao salvar Ref Light no XLSX: {error}")
+            return False
+
+        self.ref_light_average = average
+        self.ref_light_mode_active = False
+        self.ref_light_target_reached = False
+        self.ids.LabelDose.text = "Média Ref Light"
+        self.ids.label_dose.text = self.formatar_dose(average)
+        self.dosimeter_status = (
+            f"Ref Light concluído • {len(self.ref_light_readings)} leitura(s) • "
+            f"média {average:.10g} • {workbook_path.name}"
+        )
+        self.atualizar_status(
+            f"Ref Light salvo em {workbook_path} • média {average:.10g}"
+        )
+        return True
 
     def agendar_foco_dosimetro(self, selecionar=True):
 
@@ -1338,7 +1532,12 @@ class TelaPrincipalLeitora(Screen):
             if not self.caminho_arquivo.is_relative_to(TESTES_DIR.resolve()):
                 raise ValueError("O arquivo deve permanecer em assets/testes")
             try:
-                self.log_arquivo = open(self.caminho_arquivo, "x", encoding="utf-8")
+                self.log_arquivo = open(
+                    self.caminho_arquivo,
+                    "x+",
+                    encoding="utf-8",
+                    buffering=1,
+                )
             except FileExistsError:
                 self._atualizar_medicao_com_erro("Arquivo já existe")
                 self.current_measurement_id = None
@@ -1349,7 +1548,6 @@ class TelaPrincipalLeitora(Screen):
                 )
                 return False
 
-            self.log_arquivo.close()
             self.atualizar_status(f"Log iniciado em {self.caminho_arquivo}")
 
             self.nova_linha = True
@@ -1358,9 +1556,16 @@ class TelaPrincipalLeitora(Screen):
                 nome_arquivo,
                 "Integral:",
                 (
-                    "Contagens:"
-                    if context.get("reading_type") == "BACKGROUND"
-                    else "Dose mSv:"
+                    "Dose mSv:"
+                    if (
+                        context.get("reading_type") == "BACKGROUND"
+                        and self.bl_update_mode == "AUTOMATICO"
+                    )
+                    else (
+                        "Contagens:"
+                        if context.get("reading_type") == "BACKGROUND"
+                        else "Dose mSv:"
+                    )
                 ),
                 "Time;Count;Current;Light",
             ):
@@ -1372,6 +1577,7 @@ class TelaPrincipalLeitora(Screen):
             self.nova_linha = True
             self.ids.grafico_tempo_real.limpar()
             self.acquisition_active = True
+            self._armar_watchdog_primeiro_frame()
             if self.test_mode == "DOSIMETER_ID":
                 self.dosimeter_status = (
                     f"Lendo {self._nome_grandeza(self.dose_channel)} • "
@@ -1389,6 +1595,7 @@ class TelaPrincipalLeitora(Screen):
             return False
 
     def fechar_log(self, status="CONCLUIDO", notes=None):
+        self._cancelar_watchdogs_serial()
         if not self.log_arquivo:
             return
         nome = self.log_arquivo.name
@@ -1401,18 +1608,17 @@ class TelaPrincipalLeitora(Screen):
         final_status = status
         try:
             dose = self.atualizar_soma_no_log()
-            self.log_arquivo = open(
-                self.caminho_arquivo,
-                "a",
-                encoding="utf-8",
-            )
-            self.log_arquivo.write(self.string_log)
             self.log_arquivo.close()
             self.log_arquivo = None
             test_complete = self._finalizar_medicao(status, dose, notes)
             self.atualizar_status(f"Log encerrado: {nome}")
         except (OSError, sqlite3.Error, TypeError, ValueError) as error:
             final_status = "ERRO"
+            if self.log_arquivo:
+                try:
+                    self.log_arquivo.close()
+                except OSError:
+                    pass
             self.log_arquivo = None
             self._atualizar_medicao_com_erro(str(error))
             self.atualizar_status(f"Erro ao finalizar leitura: {error}")
@@ -1432,19 +1638,18 @@ class TelaPrincipalLeitora(Screen):
 
     def salvar_log(self, mensagem):
         if self.log_arquivo:
-            self.string_log += f"{mensagem}"
-            #self.log_arquivo.write(f"{mensagem}")
-            #self.log_arquivo.flush()
+            texto = f"{mensagem}"
+            self.log_arquivo.write(texto)
+            self.log_arquivo.flush()
+            self.string_log += texto
 
     def atualizar_soma_no_log(self):
         if not self.log_arquivo:
             return 0.0
 
-        nome_arquivo = self.log_arquivo.name
-        #self.log_arquivo.flush()
-
-        with open(nome_arquivo, "r", encoding="utf-8") as arquivo:
-            linhas = arquivo.readlines()
+        self.log_arquivo.flush()
+        self.log_arquivo.seek(0)
+        linhas = self.log_arquivo.readlines()
 
         linhas_string = self.string_log.splitlines()
 
@@ -1459,13 +1664,31 @@ class TelaPrincipalLeitora(Screen):
             self.applied_parameters
             and self.applied_parameters.get("reading_type") == "BACKGROUND"
         )
-        result = float(self.soma) if baseline_reading else self.calcular_dose()
+        display_baseline_as_dose = (
+            baseline_reading and self.bl_update_mode == "AUTOMATICO"
+        )
+        result = (
+            self._calcular_dose_exibida_bl_automatico()
+            if display_baseline_as_dose
+            else (float(self.soma) if baseline_reading else self.calcular_dose())
+        )
         linhas[2] = f"Soma: {self.soma}\n"
-        result_label = "Contagens" if baseline_reading else "Dose"
+        result_label = (
+            "Dose"
+            if display_baseline_as_dose or not baseline_reading
+            else "Contagens"
+        )
         formatted_result = (
-            f"{result:.10g}" if baseline_reading else self.formatar_dose(result)
+            self.formatar_dose(result)
+            if display_baseline_as_dose or not baseline_reading
+            else f"{result:.10g}"
         )
         linhas[3] = f"{result_label}: {formatted_result}\n"
+
+        self.log_arquivo.seek(0)
+        self.log_arquivo.writelines(linhas)
+        self.log_arquivo.truncate()
+        self.log_arquivo.flush()
 
         linhas_string[2] = f"Soma: {self.soma}"
         linhas_string[3] = f"{result_label}: {formatted_result}"
@@ -1489,6 +1712,28 @@ class TelaPrincipalLeitora(Screen):
             ecc=context["ecc"],
             fang=context["fang"],
             fenerg=context["fenerg"],
+        )
+
+    def _calcular_dose_exibida_bl_automatico(self):
+        """Convert BL counts to display-only dose in automatic BL mode."""
+        context = self.applied_parameters or {}
+        dosimeter = self.validated_dosimeter
+        reader = self.validated_reader
+        if not dosimeter or not reader:
+            return float(self.soma)
+        channel = context.get("dose_channel", self.dose_channel)
+        ecc = float(
+            dosimeter["ecc_hp007"]
+            if channel == "HP007"
+            else dosimeter["ecc_hp10"]
+        )
+        return calculate_dose(
+            self.soma,
+            baseline=0.0,
+            rcf=float(reader["rcf"]),
+            ecc=ecc,
+            fang=float(context.get("fang", 1)),
+            fenerg=float(context.get("fenerg", 1)),
         )
 
     def _finalizar_medicao(self, status, result, notes=None):
@@ -1520,6 +1765,8 @@ class TelaPrincipalLeitora(Screen):
             history = self.obter_database().sync_measurement_history(
                 self.current_measurement_id
             )
+            self._mostrar_alerta_releitura(history)
+            self._mostrar_confirmacao_baseline(history)
             if history is not None and (
                 self.applied_parameters
                 and self.applied_parameters.get("reading_type") == "BACKGROUND"
@@ -1527,6 +1774,124 @@ class TelaPrincipalLeitora(Screen):
                 self.reading_type = "PERSONAL_DOSE"
             return history is not None
         return False
+
+    def _mostrar_alerta_releitura(self, history):
+        """Warn the operator when the consolidated dose requires a new reading."""
+        if not history or history.get("status_dos") != NEED_RE_READ_STATUS:
+            return None
+
+        dose = float(history["dose_dos"])
+        if self.re_read_popup is not None:
+            self.re_read_popup.dismiss()
+
+        content = BoxLayout(
+            orientation="vertical",
+            spacing="12dp",
+            padding="16dp",
+        )
+        content.add_widget(
+            Label(
+                text=(
+                    f"Dose medida: {dose:.10g} mSv\n\n"
+                    "A dose é maior ou igual a 2 mSv.\n"
+                    "Refaça a leitura.\n\n"
+                    f'Tag gravada no banco: "{NEED_RE_READ_STATUS}"'
+                ),
+                halign="center",
+                valign="middle",
+            )
+        )
+        close_button = Button(
+            text="OK",
+            size_hint_y=None,
+            height="42dp",
+        )
+        content.add_widget(close_button)
+        popup = Popup(
+            title="Refazer leitura",
+            content=content,
+            size_hint=(0.72, 0.42),
+            auto_dismiss=False,
+        )
+        self.re_read_popup = popup
+        close_button.bind(on_release=popup.dismiss)
+        popup.bind(on_dismiss=lambda *_args: setattr(self, "re_read_popup", None))
+        popup.open()
+        return popup
+
+    def _mostrar_confirmacao_baseline(self, history):
+        """Ask whether a sub-background personal dose should become BL counts."""
+        if not history or history.get("status_dos") != PERSONAL_DOSE_STATUS:
+            return None
+
+        dose = float(history["dose_dos"])
+        if self.baseline_save_popup is not None:
+            self.baseline_save_popup.dismiss()
+
+        content = BoxLayout(
+            orientation="vertical",
+            spacing="12dp",
+            padding="16dp",
+        )
+        content.add_widget(
+            Label(
+                text=(
+                    f"Dose medida: {dose:.10g} mSv\n\n"
+                    "A dose é menor que 0,01 mSv.\n"
+                    "Deseja salvar esta leitura como baseline "
+                    "usando as contagens?"
+                ),
+                halign="center",
+                valign="middle",
+            )
+        )
+        actions = BoxLayout(size_hint_y=None, height="42dp", spacing="8dp")
+        no_button = Button(text="Não")
+        yes_button = Button(text="Sim, salvar contagens")
+        actions.add_widget(no_button)
+        actions.add_widget(yes_button)
+        content.add_widget(actions)
+        popup = Popup(
+            title="Salvar como baseline?",
+            content=content,
+            size_hint=(0.78, 0.46),
+            auto_dismiss=False,
+        )
+        self.baseline_save_popup = popup
+        no_button.bind(on_release=popup.dismiss)
+        yes_button.bind(
+            on_release=lambda *_args: self._salvar_dose_como_baseline(
+                popup,
+                history,
+            )
+        )
+        popup.bind(
+            on_dismiss=lambda *_args: setattr(
+                self,
+                "baseline_save_popup",
+                None,
+            )
+        )
+        popup.open()
+        return popup
+
+    def _salvar_dose_como_baseline(self, popup, history):
+        try:
+            baseline = self.obter_database().save_personal_dose_as_baseline(
+                int(history["id"]),
+            )
+        except (sqlite3.Error, TypeError, ValueError) as error:
+            self.atualizar_status(f"Erro ao salvar baseline: {error}")
+            return False
+
+        if popup is not None:
+            popup.dismiss()
+        self.atualizar_status(
+            "Leitura salva como baseline em contagens: "
+            f"Hp(10)={float(baseline['hp10_counts']):.10g}, "
+            f"Hp(0,07)={float(baseline['hp007_counts']):.10g}"
+        )
+        return True
 
     def _preparar_proxima_grandeza(self, completed_channel, *, status):
         if self.test_mode != "DOSIMETER_ID" or not self.test_session_active:
@@ -1929,15 +2294,20 @@ class TelaPrincipalLeitora(Screen):
             return
 
         # Mantém cada evento em uma linha sem perder CR/LF recebidos.
-        texto = str(dados).replace("\r", "\\r").replace("\n", "\\n")
+        if isinstance(dados, (bytes, bytearray, memoryview)):
+            texto = bytes(dados).decode("ascii", errors="backslashreplace")
+        else:
+            texto = str(dados)
+        texto = texto.replace("\r", "\\r").replace("\n", "\\n")
         horario = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
-        try:
-            self.log_serial_arquivo.write(
-                f"[{horario}] [{direcao}] {texto}\n"
-            )
-            self.log_serial_arquivo.flush()
-        except OSError:
-            traceback.print_exc()
+        with self.serial_log_lock:
+            try:
+                self.log_serial_arquivo.write(
+                    f"[{horario}] [{direcao}] {texto}\n"
+                )
+                self.log_serial_arquivo.flush()
+            except OSError:
+                traceback.print_exc()
 
     def _fechar_log_serial(self):
         if not self.log_serial_arquivo:
@@ -1956,6 +2326,9 @@ class TelaPrincipalLeitora(Screen):
             porta.device for porta in serial.tools.list_ports.comports()
         ]
         portas = list(dict.fromkeys(portas_detectadas + PORTAS_SERIAL))
+        if PORTA_SERIAL_PREFERIDA in portas:
+            portas.remove(PORTA_SERIAL_PREFERIDA)
+            portas.insert(0, PORTA_SERIAL_PREFERIDA)
 
         self.ids.porta_spinner.values = portas
         self.ids.porta_spinner.text = portas[0] if portas else "COM Port"
@@ -1984,10 +2357,26 @@ class TelaPrincipalLeitora(Screen):
         try:
             self.desconectar_serial(atualizar_botao=False)
             self.serial_connection = serial.Serial(
-                porta, BAUD_RATE, timeout=0.05
+                port=porta,
+                baudrate=BAUD_RATE,
+                bytesize=serial.EIGHTBITS,
+                parity=serial.PARITY_NONE,
+                stopbits=serial.STOPBITS_ONE,
+                timeout=SERIAL_READ_TIMEOUT,
+                write_timeout=1.0,
+                xonxoff=False,
+                rtscts=False,
+                dsrdtr=False,
             )
+            self.serial_decoder.reset()
+            self._limpar_fila_serial()
+            self._respondeu_solicitacao_parametros = False
             self._iniciar_log_serial(porta)
-            self.leitura_evento = Clock.schedule_interval(self.ler_serial, 0.1)
+            self._iniciar_leitor_serial()
+            self.leitura_evento = Clock.schedule_interval(
+                self.ler_serial,
+                SERIAL_UI_POLL_SECONDS,
+            )
             Clock.schedule_once(
                 lambda dt: self.enviar_serial(COMANDO_INICIAL), 0.2
             )
@@ -1999,9 +2388,187 @@ class TelaPrincipalLeitora(Screen):
             self.desconectar_serial(atualizar_botao=False)
             self.atualizar_status(f"Erro ao conectar: {erro}")
 
+    def _limpar_fila_serial(self):
+        while True:
+            try:
+                self.serial_frame_queue.get_nowait()
+            except Empty:
+                return
+
+    def _iniciar_leitor_serial(self):
+        self.serial_stop_event.clear()
+        self.serial_reader_thread = Thread(
+            target=self._loop_leitor_serial,
+            name="OSLMeter-SerialReader",
+            daemon=True,
+        )
+        self.serial_reader_thread.start()
+
+    def _parar_leitor_serial(self):
+        self.serial_stop_event.set()
+        connection = self.serial_connection
+        if connection is not None:
+            cancel_read = getattr(connection, "cancel_read", None)
+            if callable(cancel_read):
+                try:
+                    cancel_read()
+                except (OSError, serial.SerialException):
+                    pass
+            try:
+                if connection.is_open:
+                    connection.close()
+            except (OSError, serial.SerialException):
+                pass
+
+        reader = self.serial_reader_thread
+        if reader and reader.is_alive() and reader is not current_thread():
+            reader.join(timeout=0.5)
+        self.serial_reader_thread = None
+
+    def _loop_leitor_serial(self):
+        """Drena a USB/COM continuamente, sem depender do ciclo da UI."""
+
+        while not self.serial_stop_event.is_set():
+            connection = self.serial_connection
+            if connection is None or not connection.is_open:
+                break
+            try:
+                # read() com tamanho fixo evita a janela entre consultar
+                # in_waiting e ler: nesse intervalo mais bytes podem chegar.
+                dados = connection.read(SERIAL_READ_CHUNK_SIZE)
+                if not dados:
+                    continue
+                self.serial_bytes_received += len(dados)
+                self._registrar_log_serial("RX", dados)
+                for frame in self.serial_decoder.feed(dados):
+                    self.serial_frame_queue.put(("FRAME", frame))
+            except (OSError, serial.SerialException) as erro:
+                if not self.serial_stop_event.is_set():
+                    self.serial_frame_queue.put(("ERROR", str(erro)))
+                break
+
+    def _processar_fila_serial(self, _dt=None):
+        processados = 0
+        while processados < SERIAL_MAX_FRAMES_PER_UI_TICK:
+            try:
+                tipo, payload = self.serial_frame_queue.get_nowait()
+            except Empty:
+                break
+            processados += 1
+
+            if tipo == "ERROR":
+                self.serial_last_error = payload
+                self._registrar_log_serial("ERRO RX", payload)
+                self.atualizar_status(f"Erro na leitura serial: {payload}")
+                if self.log_arquivo:
+                    self.fechar_log(status="ERRO", notes=str(payload))
+                elif self.ref_light_reading_active:
+                    self._finalizar_ref_light_leitura(
+                        status="ERRO",
+                        notes=str(payload),
+                    )
+                continue
+
+            frame_bytes = payload
+            try:
+                frame = frame_bytes.decode("ascii")
+            except UnicodeDecodeError as erro:
+                self.serial_invalid_frames += 1
+                self._registrar_log_serial(
+                    "ERRO FRAME",
+                    f"ASCII inválido: {frame_bytes!r} ({erro})",
+                )
+                continue
+
+            self.serial_frames_received += 1
+            try:
+                self.processar_frame(frame)
+            except (TypeError, ValueError, IndexError) as erro:
+                self.serial_invalid_frames += 1
+                self._registrar_log_serial(
+                    "ERRO FRAME",
+                    f"{frame!r}: {erro}",
+                )
+                self.atualizar_status(f"Frame serial inválido: {frame}")
+
+    def _cancelar_watchdogs_serial(self):
+        for atributo in ("serial_first_frame_event", "serial_silence_event"):
+            evento = getattr(self, atributo, None)
+            if evento:
+                evento.cancel()
+                setattr(self, atributo, None)
+
+    def _armar_watchdog_primeiro_frame(self):
+        self._cancelar_watchdogs_serial()
+        self.serial_sample_received = False
+        self.serial_first_frame_event = Clock.schedule_once(
+            self._timeout_primeiro_frame,
+            SERIAL_FIRST_FRAME_TIMEOUT,
+        )
+
+    def _marcar_dado_serial_recebido(self):
+        if not self.acquisition_active or (
+            not self.log_arquivo and not self.ref_light_reading_active
+        ):
+            return
+        self.serial_sample_received = True
+        if self.serial_first_frame_event:
+            self.serial_first_frame_event.cancel()
+            self.serial_first_frame_event = None
+        if self.serial_silence_event:
+            self.serial_silence_event.cancel()
+        self.serial_silence_event = Clock.schedule_once(
+            self._timeout_silencio_serial,
+            SERIAL_SILENCE_TIMEOUT,
+        )
+
+    def _timeout_primeiro_frame(self, _dt):
+        self.serial_first_frame_event = None
+        if not self.acquisition_active or (
+            not self.log_arquivo and not self.ref_light_reading_active
+        ):
+            return
+        if not self.serial_sample_received:
+            self._encerrar_por_timeout_serial(
+                f"Nenhum frame recebido da leitora em "
+                f"{SERIAL_FIRST_FRAME_TIMEOUT:.1f} s após Start"
+            )
+
+    def _timeout_silencio_serial(self, _dt):
+        self.serial_silence_event = None
+        if not self.acquisition_active or (
+            not self.log_arquivo and not self.ref_light_reading_active
+        ):
+            return
+        self._encerrar_por_timeout_serial(
+            f"Comunicação serial sem dados por "
+            f"{SERIAL_SILENCE_TIMEOUT:.1f} s durante a leitura"
+        )
+
+    def _encerrar_por_timeout_serial(self, motivo):
+        if not self.log_arquivo and not self.ref_light_reading_active:
+            return
+        self._registrar_log_serial("TIMEOUT", motivo)
+        self.atualizar_status(motivo)
+        if self.serial_aberta():
+            self.enviar_comando_sudo("stop")
+        if self.ref_light_reading_active:
+            self._finalizar_ref_light_leitura(status="ERRO", notes=motivo)
+        else:
+            self.fechar_log(status="ERRO", notes=motivo)
+
     def desconectar_serial(self, atualizar_botao=True):
+        self._parar_leitor_serial()
+        # Processa o que já foi recebido antes de marcar a aquisição como
+        # interrompida; fechar a COM não deve descartar frames que chegaram.
+        self._processar_fila_serial()
         if self.log_arquivo:
             self.fechar_log(
+                status="INTERROMPIDO",
+                notes="Conexão serial encerrada durante a leitura",
+            )
+        elif self.ref_light_reading_active:
+            self._finalizar_ref_light_leitura(
                 status="INTERROMPIDO",
                 notes="Conexão serial encerrada durante a leitura",
             )
@@ -2013,6 +2580,8 @@ class TelaPrincipalLeitora(Screen):
             self.serial_connection.close()
 
         self.serial_connection = None
+        self.serial_decoder.reset()
+        self._limpar_fila_serial()
         self._fechar_log_serial()
 
         if atualizar_botao:
@@ -2040,37 +2609,20 @@ class TelaPrincipalLeitora(Screen):
                 self.fechar_log(status="ERRO", notes=str(erro))
 
     def ler_serial(self, dt):
-        if not self.serial_aberta():
-            return
-
-        try:
-            if self.serial_connection.in_waiting <= 0:
-                return
-
-            texto = self.serial_connection.read(
-                self.serial_connection.in_waiting
-            ).decode("ascii", errors="ignore")
-            self._registrar_log_serial("RX", texto)
-            self.buffer_serial += texto
-
-            while "&" in self.buffer_serial:
-                frame, self.buffer_serial = self.buffer_serial.split("&", 1)
-                if frame:
-                    self.processar_frame(frame)
-
-        except serial.SerialException as erro:
-            self._registrar_log_serial("ERRO RX", erro)
-            self.atualizar_status(f"Erro na leitura serial: {erro}")
-            if self.log_arquivo:
-                self.fechar_log(status="ERRO", notes=str(erro))
+        # A leitura física acontece em _loop_leitor_serial. Este callback só
+        # toca a fila e os widgets no thread principal do Kivy.
+        self._processar_fila_serial(dt)
 
     def processar_frame(self, frame):
+        frame = str(frame).strip()
+        if not frame:
+            return
         self.ids.recebido_label.text = f"Recebido: {frame}&"
         print(f"RECEBIDO: {frame}&")
         # O frame D fecha a amostra (ultima coluna); os demais sao colunas
         # intermediarias. Cada linha comeca pelo Tempo (ver registrar_valor).
         if frame.startswith("#L1%D"):
-            valor = int(frame[5:])
+            valor = int(frame[5:].strip())
             self.valor_light = valor
             self.ids.label_light.text = f"{valor}"
             self.soma_luz += valor
@@ -2082,19 +2634,44 @@ class TelaPrincipalLeitora(Screen):
 
         elif frame[:5] in ("#L1%A", "#L1%B", "#L1%E", "#L1%T"):
             if frame[:5] == "#L1%A":
-                valor = int(frame[5:])
+                valor = int(frame[5:].strip())
                 self.valor_count = valor
                 self.ids.label_count.text = f"{valor}"
                 self.soma += valor
 
             if frame[:5] == "#L1%E":
-                valor = int(frame[5:])
+                valor = int(frame[5:].strip())
                 self.valor_current = valor
                 self.ids.label_current.text = f"{valor}"
 
             self.registrar_valor(frame, fim_linha=False)
         elif frame == "#L1%I0000000":
-            self.enviar_serial(COMANDO_PARAMETROS_PADRAO)
+            # Alguns firmwares respondem ao pacote de parâmetros com este
+            # frame. O simulador também o faz. Responder sem trava cria um
+            # loop TX/RX infinito e pode saturar a USB.
+            if not self._respondeu_solicitacao_parametros:
+                self._respondeu_solicitacao_parametros = True
+                self.enviar_serial(COMANDO_PARAMETROS_PADRAO)
+        elif frame.startswith("#L1%I"):
+            if self.ref_light_reading_active:
+                if self.serial_sample_received:
+                    self._finalizar_ref_light_leitura(
+                        notes=f"Fim sinalizado pela leitora: {frame}",
+                    )
+                else:
+                    self._encerrar_por_timeout_serial(
+                        f"A leitora encerrou sem enviar amostras: {frame}"
+                    )
+            elif self.log_arquivo and self.acquisition_active:
+                if self.serial_sample_received:
+                    self.fechar_log(
+                        status="CONCLUIDO",
+                        notes=f"Fim sinalizado pela leitora: {frame}",
+                    )
+                else:
+                    self._encerrar_por_timeout_serial(
+                        f"A leitora encerrou sem enviar amostras: {frame}"
+                    )
 
     def atualizar_grafico_tempo_real(self):
         """Envia uma amostra completa ao gráfico ao fechar cada linha serial."""
@@ -2110,7 +2687,8 @@ class TelaPrincipalLeitora(Screen):
             pass
 
     def registrar_valor(self, frame, fim_linha):
-        valor = int(frame[5:])
+        valor = int(frame[5:].strip())
+        self._marcar_dado_serial_recebido()
 
         # Primeira coluna de cada linha: o Tempo (contador da amostra).
         if self.nova_linha:
@@ -2129,22 +2707,24 @@ class TelaPrincipalLeitora(Screen):
             if self.f_fechar_log:
                 if self.f_luz_ref:
                     self.ids.label_dose.text = self.formatar_dose(self.soma_luz)
+                    self.f_luz_ref = False
+                    self.f_fechar_log = False
+                    self._finalizar_ref_light_leitura()
                 else:
                     self.ids.label_dose.text = self.formatar_dose(self.soma)
-
-
-                self.f_luz_ref = False
-
-                self.f_fechar_log = False
-                self.fechar_log()
+                    self.f_fechar_log = False
+                    self.fechar_log()
 
         else:
             self.salvar_log(f"{valor};")
 
     # Comandos
     def botao_leitura(self):
-        if self.log_arquivo:
+        if self.log_arquivo or self.ref_light_reading_active:
             self.atualizar_status("Já existe uma leitura em andamento.")
+            return
+        if self.ref_light_mode_active:
+            self._iniciar_ref_light_leitura()
             return
         self.string_log = ""
         self.ids.label_dose.text = "0.000"
@@ -2167,31 +2747,54 @@ class TelaPrincipalLeitora(Screen):
             popupNomeArquivo.open()
         else:
             self.ids.LabelDose.text = (
-                "Contagens"
-                if context.get("reading_type") == "BACKGROUND"
-                else "Dose (mSv)"
+                "Dose (mSv)"
+                if (
+                    context.get("reading_type") != "BACKGROUND"
+                    or self.bl_update_mode == "AUTOMATICO"
+                )
+                else "Contagens"
             )
             self.func_botao_log(context)
 
     def botao_stop(self):
         self.enviar_comando_sudo("stop")
-        if self.log_arquivo:
+        if self.ref_light_reading_active:
+            self._finalizar_ref_light_leitura(
+                status="INTERROMPIDO",
+                notes="Leitura interrompida pelo operador",
+            )
+        elif self.log_arquivo:
             self.fechar_log(
                 status="INTERROMPIDO",
                 notes="Leitura interrompida pelo operador",
             )
 
     def botao_ref_light(self):
+        if self.log_arquivo or self.acquisition_active:
+            self.atualizar_status(
+                "Finalize ou interrompa a leitura atual antes de usar o Ref Light."
+            )
+            return False
+        if self.baseline_mode_active or self.test_session_active:
+            self.atualizar_status(
+                "Finalize o modo BL ou o teste atual antes de usar o Ref Light."
+            )
+            return False
+        if self.ref_light_mode_active:
+            return self._finalizar_modo_ref_light()
+
+        self._resetar_estado_ref_light()
+        self.ref_light_mode_active = True
         self.ids.label_dose.text = "0.000"
         self.ids.label_current.text = "0"
         self.ids.label_light.text = "0"
         self.ids.label_count.text = "0"
         self.ids.LabelDose.text = "Integral Light"
-        self.soma = 0
-        self.soma_luz = 0
-        self.f_luz_ref = True
-        self.contador = 0
-        self.enviar_comando_sudo("leitura")
+        self._atualizar_status_ref_light()
+        self.atualizar_status(
+            "Modo Ref Light ativo. Defina as repetições e pressione Start."
+        )
+        return True
 
     def enviar_comando_sudo(self, nome_comando):
         self.enviar_serial(COMANDOS_SUDO[nome_comando])
@@ -2226,6 +2829,7 @@ class TelaPrincipalLeitora(Screen):
                 f"Z{tempo_zeramento.zfill(5)}"
                 f"Q{potencia_zeramento}&"
             )
+            self._respondeu_solicitacao_parametros = False
             self.enviar_serial(comando)
             lbl_erro.text = "Parameters Updated!"
             popupNomeArquivo.open()
@@ -3879,7 +4483,7 @@ class TelaGraficos(Screen):
 
 
 class AplicativoInterfaceOSL(App):
-    title = "OSLMeter V4.0"
+    title = "OSLMeter V4.1"
     RAD_INSTRUMENTS_URL = "https://radinstruments.com.br/"
 
     def build(self):
