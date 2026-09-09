@@ -283,7 +283,7 @@ ScreenManager:
                             text: "Lendo Ref Light..." if root.ref_light_reading_active else "Start"
                             size_hint_x: None
                             width: "106dp"
-                            disabled: (root.test_mode == "DOSIMETER_ID" and not root.start_allowed) or (root.baseline_mode_active and root.bl_target_reached) or (root.ref_light_mode_active and root.ref_light_target_reached)
+                            disabled: ((root.test_mode == "DOSIMETER_ID" and not root.start_allowed and not root.ref_light_mode_active) or (root.baseline_mode_active and root.bl_target_reached) or (root.ref_light_mode_active and root.ref_light_target_reached))
                             on_release: app.root.get_screen("main").botao_leitura()
 
                         Button:

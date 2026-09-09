@@ -222,7 +222,9 @@ que a leitura deve ser refeita.
 
 ### Modo Ref Light
 
-O botão `Ref Light` ativa o modo de repetição. Informe a quantidade desejada,
+O botão `Ref Light` ativa o modo de repetição independente do dosímetro; não é
+necessário cadastrar ou validar um dosímetro para medir a luz de referência.
+Informe a quantidade desejada,
 pressione `Start` para cada aquisição e finalize automaticamente ao atingir a
 meta, ou use `Finalizar Ref Light` para encerrar antes dela. Cada sessão ocupa
 uma linha em `Documentos/OSLMeter/ref_light.xlsx`: a primeira coluna é a data,

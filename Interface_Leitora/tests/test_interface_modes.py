@@ -864,6 +864,48 @@ class InterfaceModeTestCase(unittest.TestCase):
         finally:
             interface_OSL.REF_LIGHT_XLSX_PATH = previous_xlsx_path
 
+    def test_ref_light_does_not_require_dosimeter_and_finishes_on_reader_frame(self):
+        xlsx_path = self.root_path / self._testMethodName / "ref_light.xlsx"
+        previous_xlsx_path = interface_OSL.REF_LIGHT_XLSX_PATH
+        interface_OSL.REF_LIGHT_XLSX_PATH = xlsx_path
+        try:
+            self.main.selecionar_modo("DOSIMETER_ID")
+            self.main.serial_connection = FakeSerial()
+            self.assertFalse(self.main.start_allowed)
+            self.assertTrue(self.main.botao_ref_light())
+            self.assertFalse(self.main.ids.start_button.disabled)
+
+            self.main.botao_leitura()
+            self.assertTrue(self.main.ref_light_reading_active)
+            self.main.processar_frame("#L1%D321")
+            self.main.processar_frame("#L1%I0000000")
+
+            self.assertFalse(self.main.ref_light_reading_active)
+            self.assertFalse(self.main.ref_light_mode_active)
+            self.assertEqual(self.main.ref_light_readings, [321.0])
+            self.assertTrue(xlsx_path.is_file())
+        finally:
+            interface_OSL.REF_LIGHT_XLSX_PATH = previous_xlsx_path
+
+    def test_ref_light_export_error_is_not_reported_as_finalizing(self):
+        self.main.serial_connection = FakeSerial()
+        self.assertTrue(self.main.botao_ref_light())
+        self.main.ids.ref_light_repetition_input.text = "1"
+        self.main.botao_leitura()
+        self.main.f_fechar_log = True
+
+        previous_exporter = interface_OSL.append_ref_light_session
+        interface_OSL.append_ref_light_session = lambda *args, **kwargs: (
+            (_ for _ in ()).throw(ImportError("openpyxl ausente"))
+        )
+        try:
+            self.main.processar_frame("#L1%D321")
+            self.assertTrue(self.main.ref_light_mode_active)
+            self.assertIn("openpyxl ausente", self.main.dosimeter_status)
+            self.assertNotIn("finalizando", self.main.dosimeter_status)
+        finally:
+            interface_OSL.append_ref_light_session = previous_exporter
+
     def test_055_post_erase_reading_is_saved_as_background(self):
         self.main.selecionar_modo("DOSIMETER_ID")
         self.main.serial_connection = FakeSerial()

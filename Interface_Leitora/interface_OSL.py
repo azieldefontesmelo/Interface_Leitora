@@ -1115,8 +1115,13 @@ class TelaPrincipalLeitora(Screen):
                 self.ref_light_readings,
                 output_path=REF_LIGHT_XLSX_PATH,
             )
-        except (OSError, RuntimeError, TypeError, ValueError) as error:
-            self.atualizar_status(f"Erro ao salvar Ref Light no XLSX: {error}")
+        except (ImportError, OSError, RuntimeError, TypeError, ValueError) as error:
+            message = f"Erro ao salvar Ref Light no XLSX: {error}"
+            # Keep the mode active so the operator can retry after closing the
+            # workbook or correcting the installation. Do not leave the
+            # dosimeter panel showing the ambiguous status "finalizando".
+            self.dosimeter_status = message
+            self.atualizar_status(message)
             return False
 
         self.ref_light_average = average
@@ -2645,33 +2650,29 @@ class TelaPrincipalLeitora(Screen):
                 self.ids.label_current.text = f"{valor}"
 
             self.registrar_valor(frame, fim_linha=False)
-        elif frame == "#L1%I0000000":
-            # Alguns firmwares respondem ao pacote de parâmetros com este
-            # frame. O simulador também o faz. Responder sem trava cria um
-            # loop TX/RX infinito e pode saturar a USB.
-            if not self._respondeu_solicitacao_parametros:
+        elif frame.startswith("#L1%I"):
+            if self.ref_light_reading_active or (
+                self.log_arquivo and self.acquisition_active
+            ):
+                if self.serial_sample_received:
+                    notes = f"Fim sinalizado pela leitora: {frame}"
+                    if self.ref_light_reading_active:
+                        self._finalizar_ref_light_leitura(notes=notes)
+                    else:
+                        self.fechar_log(status="CONCLUIDO", notes=notes)
+                else:
+                    self._encerrar_por_timeout_serial(
+                        f"A leitora encerrou sem enviar amostras: {frame}"
+                    )
+            # Alguns firmwares respondem ao pacote de parâmetros com
+            # #L1%I0000000. Esse frame também pode ser o encerramento da
+            # leitura; só responda com os parâmetros quando não há aquisição.
+            elif (
+                frame == "#L1%I0000000"
+                and not self._respondeu_solicitacao_parametros
+            ):
                 self._respondeu_solicitacao_parametros = True
                 self.enviar_serial(COMANDO_PARAMETROS_PADRAO)
-        elif frame.startswith("#L1%I"):
-            if self.ref_light_reading_active:
-                if self.serial_sample_received:
-                    self._finalizar_ref_light_leitura(
-                        notes=f"Fim sinalizado pela leitora: {frame}",
-                    )
-                else:
-                    self._encerrar_por_timeout_serial(
-                        f"A leitora encerrou sem enviar amostras: {frame}"
-                    )
-            elif self.log_arquivo and self.acquisition_active:
-                if self.serial_sample_received:
-                    self.fechar_log(
-                        status="CONCLUIDO",
-                        notes=f"Fim sinalizado pela leitora: {frame}",
-                    )
-                else:
-                    self._encerrar_por_timeout_serial(
-                        f"A leitora encerrou sem enviar amostras: {frame}"
-                    )
 
     def atualizar_grafico_tempo_real(self):
         """Envia uma amostra completa ao gráfico ao fechar cada linha serial."""
