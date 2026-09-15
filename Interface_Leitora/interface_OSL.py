@@ -2674,6 +2674,20 @@ class TelaPrincipalLeitora(Screen):
         )
         return True
 
+    def acionar_alta_dose_manual(self):
+        """Aciona o fluxo de alta dose sem depender do frame do controlador.
+
+        Enquanto a string de alta dose do microcontrolador não estiver
+        disponível, o botão da tela de parâmetros funciona como um gatilho
+        manual equivalente ao frame completo de saturação.
+        """
+        self._registrar_log_serial(
+            "EVENTO",
+            "Alta dose acionada manualmente pela tela de parâmetros",
+        )
+        self.processar_frame(FRAME_ALTA_DOSE)
+        return self.high_dose_state != ESTADO_LEITURA_NORMAL
+
     # Serial
     def _iniciar_log_serial(self, porta):
         self._fechar_log_serial()

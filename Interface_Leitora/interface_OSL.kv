@@ -886,6 +886,21 @@ ScreenManager:
                 text: "2"
                 values: ("1", "2", "3", "4")
 
+            Label:
+                text: "Alta dose"
+            BoxLayout:
+                spacing: "8dp"
+
+                Button:
+                    id: ler_alta_dose_button
+                    text: "Ler alta dose"
+                    size_hint_x: None
+                    width: "180dp"
+                    # A string do microcontrolador ainda não está disponível.
+                    # O clique simula o frame de saturação e abre o fluxo de
+                    # alta dose imediatamente.
+                    on_release: root.manager.get_screen("main").acionar_alta_dose_manual() if root.manager else None
+
         Button:
             text: "Update"
             size_hint_y: None

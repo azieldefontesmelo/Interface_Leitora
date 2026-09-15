@@ -191,6 +191,25 @@ class InterfaceModeTestCase(unittest.TestCase):
         self.assertEqual(self.main.high_dose_state, interface_OSL.ESTADO_LEITURA_NORMAL)
         self.assertEqual(self.database.get_measurement(measurement_id)["status"], "ERRO")
 
+    def test_manual_high_dose_control_triggers_high_dose_flow(self):
+        serial_port = FakeSerial()
+        self.main.serial_connection = serial_port
+        self.main.ids.nome_arquivo_input.text = "manual-high-dose.txt"
+        self.main.botao_leitura()
+
+        setup = self.root.get_screen("parametros")
+        setup.ids.ler_alta_dose_button.dispatch("on_release")
+        self.assertEqual(
+            self.main.high_dose_state,
+            interface_OSL.ESTADO_ALTA_DOSE_AGUARDANDO_FILTRO,
+        )
+        self.assertIsNotNone(self.main.high_dose_popup)
+        self.assertEqual(
+            serial_port.writes[-1],
+            interface_OSL.COMANDO_CONFIG_ALTA_DOSE.encode("ascii"),
+        )
+        self.main.fechar_log(status="INTERROMPIDO", notes="teste")
+
     def test_second_saturation_after_restart_finishes_as_error(self):
         serial_port = FakeSerial()
         self.main.serial_connection = serial_port
