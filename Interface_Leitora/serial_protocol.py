@@ -8,6 +8,11 @@ isso a montagem precisa acontecer sobre bytes, antes da decodificação ASCII.
 from __future__ import annotations
 
 
+def is_exact_complete_frame(frame: str, expected: str) -> bool:
+    """Match a protocol frame byte-for-byte, including the ``&`` terminator."""
+    return str(frame) == str(expected) and str(expected).endswith("&")
+
+
 class SerialFrameDecoder:
     """Monta frames delimitados por ``&`` sem perder fragmentos.
 

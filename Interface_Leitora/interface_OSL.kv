@@ -661,7 +661,7 @@ ScreenManager:
                                 text_size: self.size
                                 halign: "center"
                                 valign: "middle"
-                            Label:
+                            RotuloDose:
                                 id: label_dose
                                 font_size: "32sp"
                                 text: "0"
@@ -851,10 +851,26 @@ ScreenManager:
 
             Label:
                 text: "Stimulation Intensity"
-            Spinner:
-                id: potencia_input
-                text: "4"
-                values: ("1", "2", "3", "4")
+            BoxLayout:
+                spacing: "8dp"
+
+                Spinner:
+                    id: potencia_input
+                    text: "4"
+                    values: ("1", "2", "3", "4")
+                    on_text: root.manager.get_screen("main").atualizar_fled_exibido(self.text) if root.manager else None
+
+                Label:
+                    text: "fLed"
+                    size_hint_x: 0.45
+
+                TextInput:
+                    id: fled_input
+                    text: "1"
+                    multiline: False
+                    size_hint_x: 0.75
+                    on_text_validate: root.manager.get_screen("main").salvar_fled_atual() if root.manager else None
+                    on_focus: root.manager.get_screen("main").salvar_fled_atual() if root.manager and not self.focus else None
 
             Label:
                 text: "Erase Time"

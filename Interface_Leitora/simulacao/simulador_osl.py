@@ -16,7 +16,7 @@ class SimuladorOSL:
     def __init__(self, root):
         self.root = root
         self.root.title("Simulador OSL")
-        self.root.geometry("430x360")
+        self.root.geometry("430x410")
         self.root.resizable(False, False)
         self.serial_connection = None
         self.rodando = False
@@ -40,6 +40,12 @@ class SimuladorOSL:
         tk.Button(botoes, text="Parar", width=16, command=self.parar_leitura).grid(row=0, column=1, padx=4, pady=4)
         tk.Button(botoes, text="Zerar", width=16, command=self.zerar).grid(row=1, column=0, padx=4, pady=4)
         tk.Button(botoes, text="Ligar LED", width=16, command=self.ligar_led).grid(row=1, column=1, padx=4, pady=4)
+        tk.Button(
+            botoes,
+            text="Simular alta dose",
+            width=34,
+            command=self.simular_alta_dose,
+        ).grid(row=2, column=0, columnspan=2, padx=4, pady=4)
 
     def _conectar_serial(self):
         try:
@@ -121,6 +127,16 @@ class SimuladorOSL:
 
     def ligar_led(self):
         self._desenhar_led(True)
+
+    def simular_alta_dose(self):
+        """Stop the acquisition and emit the one accepted saturation frame."""
+        if not self.serial_connection or not self.serial_connection.is_open:
+            self.status.set(f"{PORTA_SERIAL} não está conectada")
+            return
+        self.rodando = False
+        self._desenhar_led(False)
+        self._enviar("#L1%AsatLeit&")
+        self.status.set("Alta dose simulada; aguardando ajuste do filtro")
 
     def _desenhar_led(self, ligado):
         self.canvas.itemconfigure(self.led, fill="#ff3b30" if ligado else "#303030")

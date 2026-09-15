@@ -19,9 +19,17 @@ class FakeSerial:
         self.is_open = True
         self.writes = []
         self.in_waiting = 0
+        self.flush_count = 0
+        self.fail_writes = False
 
     def write(self, data):
+        if self.fail_writes:
+            raise interface_OSL.serial.SerialException("falha simulada")
         self.writes.append(data)
+        return len(data)
+
+    def flush(self):
+        self.flush_count += 1
 
     def close(self):
         self.is_open = False
@@ -89,6 +97,9 @@ class InterfaceModeTestCase(unittest.TestCase):
         self.main.log_arquivo = None
         self.main.current_measurement_id = None
         self.main.applied_parameters = None
+        self.main._resetar_estado_alta_dose()
+        self.main.last_dose_details = None
+        self.main.fled_by_pled = dict(interface_OSL.FLED_PADRAO_POR_PLED)
         self.main.active_test_session_id = None
         self.main.active_test_dosimeter_id = None
         self.main.active_test_reading_type = None
@@ -114,6 +125,111 @@ class InterfaceModeTestCase(unittest.TestCase):
         self.main._resetar_estado_bl()
         self.main._invalidar_dosimetro("Aguardando leitura do código de barras")
         self.main.atualizar_leitoras_cadastradas()
+
+    def test_high_dose_flow_is_ordered_single_and_persisted(self):
+        serial_port = FakeSerial()
+        self.main.serial_connection = serial_port
+        self.main.ids.nome_arquivo_input.text = "high-dose-flow.txt"
+        self.main.ids.branco_textInput.text = "10"
+        self.main.ids.rcf_textInput.text = "1"
+        self.main.ids.ecc_textInput.text = "1"
+        self.main.ids.fcal_textInput.text = "1"
+        self.main.ids.fenerg_textInput.text = "1"
+
+        self.main.botao_leitura()
+        measurement_id = self.main.current_measurement_id
+        self.main.processar_frame("#L1%AsatLeit")
+        self.main.processar_frame("#L1%VsatLeit&")
+        self.assertEqual(serial_port.writes, [b"#S1%SC1001&"])
+
+        self.main.processar_frame(interface_OSL.FRAME_ALTA_DOSE)
+        self.assertEqual(
+            serial_port.writes[-1],
+            interface_OSL.COMANDO_CONFIG_ALTA_DOSE.encode("ascii"),
+        )
+        self.assertEqual(
+            self.main.high_dose_state,
+            interface_OSL.ESTADO_ALTA_DOSE_AGUARDANDO_FILTRO,
+        )
+        self.assertIsNotNone(self.main.high_dose_popup)
+        writes_after_first_trigger = list(serial_port.writes)
+        self.main.processar_frame(interface_OSL.FRAME_ALTA_DOSE)
+        self.assertEqual(serial_port.writes, writes_after_first_trigger)
+
+        self.assertTrue(self.main._confirmar_filtro_alta_dose())
+        self.assertFalse(self.main._confirmar_filtro_alta_dose())
+        self.assertEqual(serial_port.writes[-1], b"#S1%SC1001&")
+        self.assertEqual(serial_port.writes.count(b"#S1%SC1001&"), 2)
+        self.main.processar_frame("#L1%A2&")
+        self.assertEqual(
+            self.main.high_dose_state,
+            interface_OSL.ESTADO_LEITURA_ALTA_DOSE,
+        )
+        self.main.processar_frame("#L1%E45&")
+        self.main.f_fechar_log = True
+        self.main.processar_frame("#L1%D471&")
+
+        measurement = self.database.get_measurement(measurement_id)
+        self.assertEqual(measurement["dose_msv"], 190)
+        self.assertIn("Alta dose; fLed=100", measurement["notes"])
+        self.assertEqual(self.main.ids.label_dose.text, "190.000")
+        self.assertEqual(self.main.last_dose_details["mode"], "Alta dose")
+        self.assertEqual(self.main.high_dose_state, interface_OSL.ESTADO_LEITURA_NORMAL)
+        self.assertGreaterEqual(serial_port.flush_count, 3)
+
+    def test_high_dose_tx_failure_does_not_open_confirmation(self):
+        serial_port = FakeSerial()
+        self.main.serial_connection = serial_port
+        self.main.ids.nome_arquivo_input.text = "high-dose-tx-error.txt"
+        self.main.botao_leitura()
+        measurement_id = self.main.current_measurement_id
+        serial_port.fail_writes = True
+
+        self.main.processar_frame(interface_OSL.FRAME_ALTA_DOSE)
+
+        self.assertIsNone(self.main.high_dose_popup)
+        self.assertEqual(self.main.high_dose_state, interface_OSL.ESTADO_LEITURA_NORMAL)
+        self.assertEqual(self.database.get_measurement(measurement_id)["status"], "ERRO")
+
+    def test_second_saturation_after_restart_finishes_as_error(self):
+        serial_port = FakeSerial()
+        self.main.serial_connection = serial_port
+        self.main.ids.nome_arquivo_input.text = "persistent-saturation.txt"
+        self.main.botao_leitura()
+        measurement_id = self.main.current_measurement_id
+        self.main.processar_frame(interface_OSL.FRAME_ALTA_DOSE)
+        self.main._confirmar_filtro_alta_dose()
+        self.main.processar_frame("#L1%A2&")
+        self.main.processar_frame(interface_OSL.FRAME_ALTA_DOSE)
+
+        measurement = self.database.get_measurement(measurement_id)
+        self.assertEqual(measurement["status"], "ERRO")
+        self.assertEqual(measurement["dose_msv"], 0)
+        self.assertEqual(
+            serial_port.writes.count(
+                interface_OSL.COMANDO_CONFIG_ALTA_DOSE.encode("ascii")
+            ),
+            1,
+        )
+
+    def test_fled_is_loaded_edited_and_persisted_per_pled(self):
+        setup = self.root.get_screen("parametros")
+        setup.ids.potencia_input.text = "1"
+        self.main.atualizar_fled_exibido("1")
+        self.assertEqual(setup.ids.fled_input.text, "100")
+        setup.ids.fled_input.text = "125.5"
+        self.assertTrue(self.main.salvar_fled_atual())
+
+        self.main.fled_by_pled = dict(interface_OSL.FLED_PADRAO_POR_PLED)
+        self.main.carregar_configuracoes()
+        self.assertEqual(self.main.fled_by_pled["1"], 125.5)
+        self.assertIsNone(self.main.fled_by_pled["2"])
+        self.assertEqual(self.main.fled_by_pled["4"], 1)
+
+    def test_dose_format_has_one_rule(self):
+        self.assertEqual(self.main.formatar_dose(0), "0")
+        self.assertEqual(self.main.formatar_dose(0.067), "0.067")
+        self.assertEqual(self.main.formatar_dose(12.3454), "12.345")
 
     @classmethod
     def tearDownClass(cls):
@@ -827,6 +943,70 @@ class InterfaceModeTestCase(unittest.TestCase):
         self.assertEqual(self.database.get_dosimeter("0123456789")["bl_hp10"], 101)
         self.assertEqual(self.database.get_dosimeter("0123456789")["bl_hp007"], 201)
         self.assertIsNone(self.main.baseline_save_popup)
+
+    def test_low_hp007_dose_also_asks_to_save_baseline_counts(self):
+        self.main.selecionar_modo("DOSIMETER_ID")
+        self.main.serial_connection = FakeSerial()
+        self.main.ids.reader_spinner.text = "3001A01"
+        self.main.ids.dosimeter_id_input.text = "0123456789"
+        self.assertTrue(self.main.confirmar_codigo_dosimetro())
+
+        self.main.botao_leitura()
+        self.main.processar_frame("#L1%A1000")
+        self.main.processar_frame("#L1%E45")
+        self.main.f_fechar_log = True
+        self.main.processar_frame("#L1%D471")
+
+        self.main.botao_leitura()
+        self.main.processar_frame("#L1%A201")
+        self.main.processar_frame("#L1%E45")
+        self.main.f_fechar_log = True
+        self.main.processar_frame("#L1%D471")
+
+        history = self.database.search_personal_doses()[0]
+        self.assertGreater(history["hp10_dos"], 0.01)
+        self.assertLess(history["hp007_dos"], 0.01)
+        self.assertEqual(history["status_dos"], "Need to Erase")
+        self.assertIsNotNone(self.main.baseline_save_popup)
+        popup_text = "\n".join(
+            child.text
+            for child in self.main.baseline_save_popup.content.children
+            if hasattr(child, "text")
+        )
+        self.assertIn("Hp(0,07)", popup_text)
+        self.main.baseline_save_popup.dismiss()
+
+    def test_high_hp007_dose_also_requires_new_reading(self):
+        self.main.selecionar_modo("DOSIMETER_ID")
+        self.main.serial_connection = FakeSerial()
+        self.main.ids.reader_spinner.text = "3001A01"
+        self.main.ids.dosimeter_id_input.text = "0123456789"
+        self.assertTrue(self.main.confirmar_codigo_dosimetro())
+
+        self.main.botao_leitura()
+        self.main.processar_frame("#L1%A1000")
+        self.main.processar_frame("#L1%E45")
+        self.main.f_fechar_log = True
+        self.main.processar_frame("#L1%D471")
+
+        self.main.botao_leitura()
+        self.main.processar_frame("#L1%A50000")
+        self.main.processar_frame("#L1%E45")
+        self.main.f_fechar_log = True
+        self.main.processar_frame("#L1%D471")
+
+        history = self.database.search_personal_doses()[0]
+        self.assertLess(history["hp10_dos"], 2)
+        self.assertGreaterEqual(history["hp007_dos"], 2)
+        self.assertEqual(history["status_dos"], NEED_RE_READ_STATUS)
+        self.assertIsNotNone(self.main.re_read_popup)
+        popup_text = "\n".join(
+            child.text
+            for child in self.main.re_read_popup.content.children
+            if hasattr(child, "text")
+        )
+        self.assertIn("Hp(0,07)", popup_text)
+        self.main.re_read_popup.dismiss()
 
     def test_ref_light_repetitions_are_averaged_and_exported_to_xlsx(self):
         xlsx_path = self.root_path / self._testMethodName / "documentos" / "ref_light.xlsx"

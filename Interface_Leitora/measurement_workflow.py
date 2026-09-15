@@ -109,3 +109,28 @@ def calculate_dose(
     fenerg: float,
 ) -> float:
     return abs(total - baseline) * rcf * ecc * fang * fenerg
+
+
+def calculate_high_dose(
+    total: float,
+    *,
+    fled: float,
+    baseline: float,
+    rcf: float,
+    ecc: float,
+    fang: float,
+    fenerg: float,
+) -> float:
+    """Calculate dose after saturation using the calibrated LED factor."""
+    values = {
+        "fLed": fled,
+        "RCF": rcf,
+        "ECC": ecc,
+        "Fang": fang,
+        "Fenerg": fenerg,
+    }
+    for field_name, value in values.items():
+        parse_number(value, field_name, positive=True)
+    parse_number(baseline, "Base Line", positive=False)
+    net_signal = (float(total) * float(fled)) - float(baseline)
+    return abs(net_signal) * float(rcf) * float(ecc) * float(fang) * float(fenerg)

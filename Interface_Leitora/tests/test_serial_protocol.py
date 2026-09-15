@@ -2,10 +2,15 @@ from __future__ import annotations
 
 import unittest
 
-from serial_protocol import SerialFrameDecoder
+from serial_protocol import SerialFrameDecoder, is_exact_complete_frame
 
 
 class SerialFrameDecoderTestCase(unittest.TestCase):
+    def test_exact_complete_frame_requires_case_and_terminator(self):
+        expected = "#L1%AsatLeit&"
+        self.assertTrue(is_exact_complete_frame(expected, expected))
+        self.assertFalse(is_exact_complete_frame("#L1%AsatLeit", expected))
+        self.assertFalse(is_exact_complete_frame("#L1%asatLeit&", expected))
     def test_preserves_fragmented_frame(self):
         decoder = SerialFrameDecoder()
 

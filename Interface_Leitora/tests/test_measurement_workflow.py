@@ -6,6 +6,7 @@ from datetime import datetime
 from measurement_workflow import (
     append_filename_observation,
     calculate_dose,
+    calculate_high_dose,
     dosimeter_filename,
     safe_test_filename,
     scanner_text,
@@ -79,6 +80,20 @@ class MeasurementWorkflowTestCase(unittest.TestCase):
                 fenerg=6,
             ),
             abs(1 - 2) * 3 * 4 * 5 * 6,
+        )
+
+    def test_high_dose_formula_applies_fled_before_baseline_and_absolute(self):
+        self.assertEqual(
+            calculate_high_dose(
+                2,
+                fled=100,
+                baseline=250,
+                rcf=2,
+                ecc=3,
+                fang=4,
+                fenerg=5,
+            ),
+            50 * 2 * 3 * 4 * 5,
         )
 
 

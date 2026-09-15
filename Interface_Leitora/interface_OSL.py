@@ -63,6 +63,7 @@ from database import Database, NEED_RE_READ_STATUS, PERSONAL_DOSE_STATUS
 from measurement_workflow import (
     append_filename_observation,
     calculate_dose,
+    calculate_high_dose,
     dosimeter_filename,
     parse_number,
     safe_test_filename,
@@ -70,7 +71,7 @@ from measurement_workflow import (
 )
 from Plot_grafico import gerar_grafico
 from ref_light_export import REF_LIGHT_XLSX_PATH, append_ref_light_session
-from serial_protocol import SerialFrameDecoder
+from serial_protocol import SerialFrameDecoder, is_exact_complete_frame
 
 
 NomeArquivoBL = BoxLayout(orientation="vertical")
@@ -114,6 +115,22 @@ COMANDOS_SUDO = {
 }
 COMANDO_PARAMETROS_PADRAO = "#S1%M1G4L03000P4Z05000Q4&"
 COMANDO_INICIAL = COMANDO_PARAMETROS_PADRAO
+FRAME_ALTA_DOSE = "#L1%AsatLeit&"
+COMANDO_CONFIG_ALTA_DOSE = "#S1%M1G3L03000P1Z01000Q4&"
+ESTADO_LEITURA_NORMAL = "LEITURA_NORMAL"
+ESTADO_ALTA_DOSE_ENVIANDO_CONFIG = "ALTA_DOSE_ENVIANDO_CONFIG"
+ESTADO_ALTA_DOSE_AGUARDANDO_FILTRO = "ALTA_DOSE_AGUARDANDO_FILTRO"
+ESTADO_ALTA_DOSE_REINICIANDO = "ALTA_DOSE_REINICIANDO"
+ESTADO_LEITURA_ALTA_DOSE = "LEITURA_ALTA_DOSE"
+ESTADO_LEITURA_FINALIZADA = "LEITURA_FINALIZADA"
+ESTADOS_ALTA_DOSE_PENDENTE = frozenset(
+    {
+        ESTADO_ALTA_DOSE_ENVIANDO_CONFIG,
+        ESTADO_ALTA_DOSE_AGUARDANDO_FILTRO,
+        ESTADO_ALTA_DOSE_REINICIANDO,
+    }
+)
+FLED_PADRAO_POR_PLED = {"1": 100.0, "2": None, "3": None, "4": 1.0}
 
 class BotaoNavegacaoParametros(Button):
     hovered = BooleanProperty(False)
@@ -140,6 +157,27 @@ class EntradaData(TextInput):
     """Campo de data com digitação livre, sem inserir barras automaticamente."""
 
     pass
+
+
+class RotuloDose(Label):
+    """Valor de dose que abre o snapshot do cálculo em duplo clique."""
+
+    def on_touch_down(self, touch):
+        if self.collide_point(*touch.pos) and getattr(touch, "is_double_tap", False):
+            aplicativo = App.get_running_app()
+            if aplicativo and aplicativo.root:
+                aplicativo.root.get_screen("main").mostrar_detalhes_dose()
+            return True
+        return super().on_touch_down(touch)
+
+
+class PopupAltaDose(Popup):
+    """Modal that cannot be dismissed with Escape while confirmation is pending."""
+
+    def _handle_keyboard(self, _window, key, *args):
+        if key == 27:
+            return True
+        return super()._handle_keyboard(_window, key, *args)
 
 
 class _PainelModoTouch:
@@ -694,6 +732,7 @@ class TelaPrincipalLeitora(Screen):
     ref_light_target = NumericProperty(1)
     ref_light_target_reached = BooleanProperty(False)
     ref_light_average = NumericProperty(0)
+    high_dose_state = StringProperty(ESTADO_LEITURA_NORMAL)
 
     soma = 0
     contador = 0.1
@@ -753,6 +792,12 @@ class TelaPrincipalLeitora(Screen):
         self.bl_selection_popup = None
         self.re_read_popup = None
         self.baseline_save_popup = None
+        self.high_dose_popup = None
+        self.high_dose_restart_button = None
+        self.high_dose_restart_locked = False
+        self.last_dose_details = None
+        self.fled_by_pled = dict(FLED_PADRAO_POR_PLED)
+        self._selected_pled = "4"
         self.ref_light_readings = []
         self._bl_apply_button = None
         self._bl_selection_summary = None
@@ -859,16 +904,31 @@ class TelaPrincipalLeitora(Screen):
     def carregar_configuracoes(self):
         """Load user preferences without storing them in the database."""
         mode = "MANUAL"
+        fled_by_pled = dict(FLED_PADRAO_POR_PLED)
         try:
             if SETTINGS_PATH.is_file():
                 settings = json.loads(SETTINGS_PATH.read_text(encoding="utf-8"))
                 saved_mode = str(settings.get("bl_update_mode", "")).upper()
                 if saved_mode in ("AUTOMATICO", "MANUAL"):
                     mode = saved_mode
+                saved_fled = settings.get("fled_by_pled", {})
+                if isinstance(saved_fled, dict):
+                    for pled in FLED_PADRAO_POR_PLED:
+                        value = saved_fled.get(pled)
+                        if value is None and pled in ("2", "3"):
+                            fled_by_pled[pled] = None
+                        elif value is not None:
+                            fled_by_pled[pled] = parse_number(
+                                value,
+                                f"fLed P{pled}",
+                                positive=True,
+                            )
         except (AttributeError, OSError, TypeError, ValueError, json.JSONDecodeError):
             mode = "MANUAL"
         self.bl_update_mode = mode
+        self.fled_by_pled = fled_by_pled
         self._sincronizar_botao_modo_bl()
+        self.atualizar_fled_exibido(self._selected_pled)
         return mode
 
     def _salvar_configuracoes(self):
@@ -881,6 +941,7 @@ class TelaPrincipalLeitora(Screen):
         except (OSError, TypeError, ValueError, json.JSONDecodeError):
             pass
         settings["bl_update_mode"] = self.bl_update_mode
+        settings["fled_by_pled"] = self.fled_by_pled
         SETTINGS_PATH.parent.mkdir(parents=True, exist_ok=True)
         temporary_path = SETTINGS_PATH.with_suffix(".tmp")
         temporary_path.write_text(
@@ -888,6 +949,55 @@ class TelaPrincipalLeitora(Screen):
             encoding="utf-8",
         )
         temporary_path.replace(SETTINGS_PATH)
+
+    def atualizar_fled_exibido(self, pled):
+        pled = str(pled).strip()
+        if pled not in FLED_PADRAO_POR_PLED:
+            return
+        self._selected_pled = pled
+        try:
+            field = self.manager.get_screen("parametros").ids.fled_input
+        except (AttributeError, KeyError):
+            return
+        value = self.fled_by_pled.get(pled)
+        field.text = "" if value is None else f"{float(value):.10g}"
+
+    def salvar_fled_atual(self):
+        """Validate and persist the fLed associated with the selected PLed."""
+        try:
+            screen = self.manager.get_screen("parametros")
+            pled = screen.ids.potencia_input.text.strip()
+            text_value = screen.ids.fled_input.text.strip()
+        except (AttributeError, KeyError):
+            return False
+        if pled not in FLED_PADRAO_POR_PLED:
+            self.atualizar_status("PLed inválido para salvar fLed.")
+            return False
+        if not text_value:
+            if pled not in ("2", "3"):
+                self.atualizar_status(f"fLed de P{pled} deve ser maior que zero.")
+                return False
+            value = None
+        else:
+            try:
+                value = parse_number(text_value, f"fLed P{pled}", positive=True)
+            except ValueError as error:
+                self.atualizar_status(str(error))
+                return False
+        self.fled_by_pled[pled] = value
+        try:
+            self._salvar_configuracoes()
+        except OSError as error:
+            self.atualizar_status(f"Não foi possível salvar fLed: {error}")
+            return False
+        return True
+
+    def obter_fled(self, pled):
+        pled = str(pled).strip()
+        value = self.fled_by_pled.get(pled)
+        if value is None:
+            raise ValueError(f"fLed de P{pled} ainda não foi calibrado")
+        return parse_number(value, f"fLed P{pled}", positive=True)
 
     def _sincronizar_botao_modo_bl(self):
         try:
@@ -1515,6 +1625,8 @@ class TelaPrincipalLeitora(Screen):
         )
         self.automatic_file_name = nome_arquivo
         self.applied_parameters = dict(context)
+        self.applied_parameters["high_dose"] = False
+        self.applied_parameters["fled"] = 1.0
 
         try:
             self.current_measurement_id = self.obter_database().add_measurement(
@@ -1612,7 +1724,17 @@ class TelaPrincipalLeitora(Screen):
         test_complete = False
         final_status = status
         try:
-            dose = self.atualizar_soma_no_log()
+            invalid_high_dose = bool(
+                self.applied_parameters
+                and self.applied_parameters.get("high_dose")
+                and status != "CONCLUIDO"
+            )
+            if invalid_high_dose:
+                dose = 0.0
+                self.last_dose_details = None
+                self.ids.label_dose.text = "0"
+            else:
+                dose = self.atualizar_soma_no_log()
             self.log_arquivo.close()
             self.log_arquivo = None
             test_complete = self._finalizar_medicao(status, dose, notes)
@@ -1640,6 +1762,9 @@ class TelaPrincipalLeitora(Screen):
                 )
             self.applied_parameters = None
             self.current_measurement_id = None
+            if self.high_dose_state != ESTADO_LEITURA_NORMAL:
+                self._definir_estado_alta_dose(ESTADO_LEITURA_FINALIZADA)
+                self._resetar_estado_alta_dose()
 
     def salvar_log(self, mensagem):
         if self.log_arquivo:
@@ -1701,6 +1826,8 @@ class TelaPrincipalLeitora(Screen):
         self.ids.label_dose.text = formatted_result
 
         self.string_log = "\n".join(linhas_string)
+        if not baseline_reading:
+            self._registrar_auditoria_dose()
         return result
 
         #with open(nome_arquivo, "w", encoding="utf-8") as arquivo:
@@ -1710,14 +1837,73 @@ class TelaPrincipalLeitora(Screen):
         context = self.applied_parameters
         if context is None:
             context = self._preparar_contexto_teste()
-        return calculate_dose(
-            self.soma,
-            baseline=context["baseline"],
-            rcf=context["rcf"],
-            ecc=context["ecc"],
-            fang=context["fang"],
-            fenerg=context["fenerg"],
+        high_dose = bool(context.get("high_dose")) or (
+            self.high_dose_state == ESTADO_LEITURA_ALTA_DOSE
         )
+        fled = float(context.get("fled", 1.0))
+        if high_dose:
+            result = calculate_high_dose(
+                self.soma,
+                fled=fled,
+                baseline=context["baseline"],
+                rcf=context["rcf"],
+                ecc=context["ecc"],
+                fang=context["fang"],
+                fenerg=context["fenerg"],
+            )
+            net_signal = (float(self.soma) * fled) - float(context["baseline"])
+            formula = (
+                "|(soma × fLed) − linha_de_base| × RCF × ECC × Fang × Fenerg"
+            )
+        else:
+            result = calculate_dose(
+                self.soma,
+                baseline=context["baseline"],
+                rcf=context["rcf"],
+                ecc=context["ecc"],
+                fang=context["fang"],
+                fenerg=context["fenerg"],
+            )
+            net_signal = float(self.soma) - float(context["baseline"])
+            formula = "|soma − linha_de_base| × RCF × ECC × Fang × Fenerg"
+        self.last_dose_details = {
+            "mode": "Alta dose" if high_dose else "Normal",
+            "formula": formula,
+            "sum": float(self.soma),
+            "fled": fled if high_dose else None,
+            "baseline": float(context["baseline"]),
+            "rcf": float(context["rcf"]),
+            "ecc": float(context["ecc"]),
+            "fang": float(context["fang"]),
+            "fenerg": float(context["fenerg"]),
+            "net_signal": net_signal,
+            "absolute_signal": abs(net_signal),
+            "dose": float(result),
+        }
+        return result
+
+    @staticmethod
+    def _numero_auditoria(value):
+        return f"{float(value):.15g}"
+
+    def _registrar_auditoria_dose(self):
+        details = self.last_dose_details
+        if not details:
+            return
+        text = (
+            f"modo={details['mode']}; soma={self._numero_auditoria(details['sum'])}; "
+            f"fLed={'—' if details['fled'] is None else self._numero_auditoria(details['fled'])}; "
+            f"linha_de_base={self._numero_auditoria(details['baseline'])}; "
+            f"RCF={self._numero_auditoria(details['rcf'])}; "
+            f"ECC={self._numero_auditoria(details['ecc'])}; "
+            f"Fang={self._numero_auditoria(details['fang'])}; "
+            f"Fenerg={self._numero_auditoria(details['fenerg'])}; "
+            f"sinal_liquido={self._numero_auditoria(details['net_signal'])}; "
+            f"modulo={self._numero_auditoria(details['absolute_signal'])}; "
+            f"dose={self._numero_auditoria(details['dose'])} mSv"
+        )
+        self._registrar_log_serial("CALCULO", text)
+        self.salvar_log(f"\nAuditoria dose: {text}\n")
 
     def _calcular_dose_exibida_bl_automatico(self):
         """Convert BL counts to display-only dose in automatic BL mode."""
@@ -1748,16 +1934,32 @@ class TelaPrincipalLeitora(Screen):
             self.applied_parameters
             and self.applied_parameters.get("reading_type") == "BACKGROUND"
         )
+        high_dose = bool(
+            self.applied_parameters
+            and self.applied_parameters.get("high_dose")
+        )
+        valid_result = result
+        if high_dose and status != "CONCLUIDO":
+            valid_result = 0.0
+        persisted_notes = notes
+        if high_dose:
+            high_dose_note = (
+                "Alta dose; fLed="
+                f"{self._numero_auditoria(self.applied_parameters.get('fled', 1.0))}"
+            )
+            persisted_notes = (
+                f"{notes}; {high_dose_note}" if notes else high_dose_note
+            )
         self.obter_database().update_measurement(
             self.current_measurement_id,
             count_01s=self.valor_count,
             current_ma=self.valor_current,
             light_mv=self.valor_light,
             raw_signal=self.soma,
-            dose_msv=0.0 if baseline_reading else result,
+            dose_msv=0.0 if baseline_reading else valid_result,
             file_path=str(self.caminho_arquivo),
             status=status,
-            notes=notes,
+            notes=persisted_notes,
         )
         if status == "CONCLUIDO":
             if self.baseline_mode_active and baseline_reading:
@@ -1780,12 +1982,25 @@ class TelaPrincipalLeitora(Screen):
             return history is not None
         return False
 
+    @staticmethod
+    def _formatar_doses_historico(history):
+        doses = []
+        for column, label in (
+            ("hp10_dos", "Hp(10)"),
+            ("hp007_dos", "Hp(0,07)"),
+        ):
+            value = history.get(column)
+            if value is not None:
+                doses.append(f"{label}: {float(value):.10g} mSv")
+        return "\n".join(doses)
+
     def _mostrar_alerta_releitura(self, history):
         """Warn the operator when the consolidated dose requires a new reading."""
         if not history or history.get("status_dos") != NEED_RE_READ_STATUS:
             return None
 
         dose = float(history["dose_dos"])
+        channel_doses = self._formatar_doses_historico(history)
         if self.re_read_popup is not None:
             self.re_read_popup.dismiss()
 
@@ -1797,7 +2012,8 @@ class TelaPrincipalLeitora(Screen):
         content.add_widget(
             Label(
                 text=(
-                    f"Dose medida: {dose:.10g} mSv\n\n"
+                    f"Dose consolidada: {dose:.10g} mSv\n"
+                    f"{channel_doses}\n\n"
                     "A dose é maior ou igual a 2 mSv.\n"
                     "Refaça a leitura.\n\n"
                     f'Tag gravada no banco: "{NEED_RE_READ_STATUS}"'
@@ -1830,6 +2046,7 @@ class TelaPrincipalLeitora(Screen):
             return None
 
         dose = float(history["dose_dos"])
+        channel_doses = self._formatar_doses_historico(history)
         if self.baseline_save_popup is not None:
             self.baseline_save_popup.dismiss()
 
@@ -1841,7 +2058,8 @@ class TelaPrincipalLeitora(Screen):
         content.add_widget(
             Label(
                 text=(
-                    f"Dose medida: {dose:.10g} mSv\n\n"
+                    f"Dose consolidada: {dose:.10g} mSv\n"
+                    f"{channel_doses}\n\n"
                     "A dose é menor que 0,01 mSv.\n"
                     "Deseja salvar esta leitura como baseline "
                     "usando as contagens?"
@@ -2272,9 +2490,189 @@ class TelaPrincipalLeitora(Screen):
 
     @staticmethod
     def formatar_dose(valor):
-        """Usa tres casas para valores menores que 1 e nenhuma nos demais."""
+        """Show real zero as 0 and every non-zero dose with three decimals."""
         valor = float(valor)
-        return f"{valor:.3f}" if abs(valor) < 1 else f"{valor:.0f}"
+        return "0" if valor == 0 else f"{valor:.3f}"
+
+    def mostrar_detalhes_dose(self):
+        details = self.last_dose_details
+        content = BoxLayout(orientation="vertical", spacing=8, padding=12)
+        if not details:
+            content.add_widget(
+                Label(text="Os detalhes ainda não estão disponíveis.")
+            )
+        else:
+            rows = (
+                ("Modo", details["mode"]),
+                ("Fórmula", details["formula"]),
+                ("Soma", self._numero_auditoria(details["sum"])),
+                (
+                    "fLed",
+                    "—" if details["fled"] is None else self._numero_auditoria(details["fled"]),
+                ),
+                ("Linha de base", self._numero_auditoria(details["baseline"])),
+                ("RCF", self._numero_auditoria(details["rcf"])),
+                ("ECC", self._numero_auditoria(details["ecc"])),
+                ("Fang", self._numero_auditoria(details["fang"])),
+                ("Fenerg", self._numero_auditoria(details["fenerg"])),
+                ("Dose calculada", f"{self._numero_auditoria(details['dose'])} mSv"),
+            )
+            grid = GridLayout(cols=2, spacing=6)
+            for name, value in rows:
+                grid.add_widget(Label(text=str(name), halign="right"))
+                grid.add_widget(Label(text=str(value), halign="left"))
+            content.add_widget(grid)
+        close_button = Button(text="Fechar", size_hint_y=None, height=42)
+        content.add_widget(close_button)
+        popup = Popup(
+            title="Detalhes do cálculo da dose",
+            content=content,
+            size_hint=(0.78, 0.82),
+            auto_dismiss=False,
+        )
+        close_button.bind(on_release=popup.dismiss)
+        popup.open()
+        return popup
+
+    def _definir_estado_alta_dose(self, new_state):
+        old_state = self.high_dose_state
+        self.high_dose_state = new_state
+        self._registrar_log_serial(
+            "ESTADO",
+            f"alta dose: {old_state} -> {new_state}",
+        )
+
+    def _resetar_estado_alta_dose(self):
+        popup = self.high_dose_popup
+        self.high_dose_popup = None
+        if popup is not None:
+            popup.dismiss()
+        self.high_dose_restart_button = None
+        self.high_dose_restart_locked = False
+        self.high_dose_state = ESTADO_LEITURA_NORMAL
+
+    def _abrir_popup_alta_dose(self):
+        content = BoxLayout(orientation="vertical", spacing=10, padding=14)
+        content.add_widget(
+            Label(
+                text=(
+                    "A leitura está indicando alta dose.\n"
+                    "Ajuste manualmente o filtro antes de continuar.\n\n"
+                    "Após ajustar o filtro, pressione OK para reiniciar a leitura."
+                ),
+                halign="center",
+            )
+        )
+        button = Button(text="OK", size_hint_y=None, height=46)
+        content.add_widget(button)
+        popup = PopupAltaDose(
+            title="Alta dose detectada",
+            content=content,
+            size_hint=(0.72, 0.48),
+            auto_dismiss=False,
+        )
+        self.high_dose_popup = popup
+        self.high_dose_restart_button = button
+        button.bind(on_release=self._confirmar_filtro_alta_dose)
+        popup.open()
+        return popup
+
+    def _tratar_saturacao_alta_dose(self):
+        self._registrar_log_serial("EVENTO", FRAME_ALTA_DOSE)
+        if self.high_dose_state in ESTADOS_ALTA_DOSE_PENDENTE:
+            self._registrar_log_serial(
+                "EVENTO",
+                "Saturação duplicada ignorada enquanto há uma pendência",
+            )
+            return
+        if self.high_dose_state == ESTADO_LEITURA_ALTA_DOSE:
+            self.acquisition_active = False
+            self.fechar_log(
+                status="ERRO",
+                notes="Saturação persistente após reinício em alta dose",
+            )
+            return
+        if not self.log_arquivo or not self.acquisition_active:
+            self._registrar_log_serial(
+                "EVENTO",
+                "Saturação ignorada sem leitura ativa",
+            )
+            return
+
+        self._cancelar_watchdogs_serial()
+        self.acquisition_active = False
+        self._definir_estado_alta_dose(ESTADO_ALTA_DOSE_ENVIANDO_CONFIG)
+        try:
+            fled = self.obter_fled("1")
+            self.applied_parameters["high_dose"] = True
+            self.applied_parameters["fled"] = fled
+        except (AttributeError, TypeError, ValueError) as error:
+            self.fechar_log(status="ERRO", notes=f"Falha ao preparar alta dose: {error}")
+            return
+
+        if not self.enviar_serial(COMANDO_CONFIG_ALTA_DOSE, finalizar_em_erro=False):
+            self.fechar_log(
+                status="ERRO",
+                notes="ERRO TX ao enviar configuração P1 de alta dose",
+            )
+            return
+        self._definir_estado_alta_dose(ESTADO_ALTA_DOSE_AGUARDANDO_FILTRO)
+        self._abrir_popup_alta_dose()
+
+    def _reinicializar_tentativa_alta_dose(self):
+        self.soma = 0
+        self.soma_luz = 0
+        self.contador = 0.1
+        self.valor_count = 0
+        self.valor_current = 0
+        self.valor_light = 0
+        self.nova_linha = True
+        self.f_fechar_log = False
+        self.serial_sample_received = False
+        for widget_id in ("label_dose", "label_current", "label_light", "label_count"):
+            self.ids[widget_id].text = "0"
+        self.ids.grafico_tempo_real.limpar()
+        if self.log_arquivo:
+            self.log_arquivo.flush()
+            self.log_arquivo.seek(0)
+            header = self.log_arquivo.readlines()[:5]
+            while len(header) < 5:
+                header.append("\n")
+            header[2] = "Soma: 0\n"
+            header[3] = "Dose mSv: 0\n"
+            self.log_arquivo.seek(0)
+            self.log_arquivo.writelines(header)
+            self.log_arquivo.truncate()
+            self.log_arquivo.flush()
+            self.string_log = "".join(header)
+
+    def _confirmar_filtro_alta_dose(self, _button=None):
+        if (
+            self.high_dose_state != ESTADO_ALTA_DOSE_AGUARDANDO_FILTRO
+            or self.high_dose_restart_locked
+        ):
+            return False
+        self.high_dose_restart_locked = True
+        if self.high_dose_restart_button is not None:
+            self.high_dose_restart_button.disabled = True
+        if self.high_dose_popup is not None:
+            self.high_dose_popup.dismiss()
+            self.high_dose_popup = None
+        self._reinicializar_tentativa_alta_dose()
+        self._definir_estado_alta_dose(ESTADO_ALTA_DOSE_REINICIANDO)
+        self.acquisition_active = True
+        if not self.enviar_serial(COMANDOS_SUDO["leitura"], finalizar_em_erro=False):
+            self.acquisition_active = False
+            self.fechar_log(
+                status="ERRO",
+                notes="ERRO TX ao reiniciar leitura de alta dose",
+            )
+            return False
+        self._armar_watchdog_primeiro_frame()
+        self.atualizar_status(
+            "Filtro confirmado; aguardando o primeiro frame da leitura de alta dose."
+        )
+        return True
 
     # Serial
     def _iniciar_log_serial(self, porta):
@@ -2487,7 +2885,9 @@ class TelaPrincipalLeitora(Screen):
 
             self.serial_frames_received += 1
             try:
-                self.processar_frame(frame)
+                # O decoder só libera frames depois de encontrar '&'. Recoloca
+                # o terminador para que gatilhos críticos validem o pacote inteiro.
+                self.processar_frame(f"{frame}&")
             except (TypeError, ValueError, IndexError) as erro:
                 self.serial_invalid_frames += 1
                 self._registrar_log_serial(
@@ -2596,22 +2996,37 @@ class TelaPrincipalLeitora(Screen):
     def serial_aberta(self):
         return self.serial_connection and self.serial_connection.is_open
 
-    def enviar_serial(self, comando):
+    def enviar_serial(self, comando, *, finalizar_em_erro=True):
         if not self.serial_aberta():
             self.atualizar_status("Serial desconectada. Verifique a porta.")
             lbl_erro.text = "Connect to OSL System!"
             popupNomeArquivo.open()
-            return
+            return False
 
         try:
-            self.serial_connection.write(comando.encode("ascii"))
+            payload = comando.encode("ascii")
+            total_written = 0
+            while total_written < len(payload):
+                written = self.serial_connection.write(payload[total_written:])
+                if written is None:
+                    written = len(payload) - total_written
+                if written <= 0:
+                    raise serial.SerialTimeoutException(
+                        "A porta serial não aceitou todos os bytes"
+                    )
+                total_written += written
+            flush = getattr(self.serial_connection, "flush", None)
+            if callable(flush):
+                flush()
             self._registrar_log_serial("TX", comando)
             self.atualizar_status(f"Enviado: {comando}")
-        except serial.SerialException as erro:
+            return True
+        except (OSError, serial.SerialException) as erro:
             self._registrar_log_serial("ERRO TX", erro)
             self.atualizar_status(f"Erro ao enviar: {erro}")
-            if self.log_arquivo:
+            if finalizar_em_erro and self.log_arquivo:
                 self.fechar_log(status="ERRO", notes=str(erro))
+            return False
 
     def ler_serial(self, dt):
         # A leitura física acontece em _loop_leitor_serial. Este callback só
@@ -2619,11 +3034,30 @@ class TelaPrincipalLeitora(Screen):
         self._processar_fila_serial(dt)
 
     def processar_frame(self, frame):
-        frame = str(frame).strip()
-        if not frame:
+        received_frame = str(frame).strip()
+        if not received_frame:
             return
-        self.ids.recebido_label.text = f"Recebido: {frame}&"
-        print(f"RECEBIDO: {frame}&")
+        complete_frame = received_frame if received_frame.endswith("&") else None
+        frame = received_frame[:-1] if complete_frame else received_frame
+        display_frame = complete_frame or f"{frame}&"
+        self.ids.recebido_label.text = f"Recebido: {display_frame}"
+        print(f"RECEBIDO: {display_frame}")
+
+        if complete_frame and is_exact_complete_frame(complete_frame, FRAME_ALTA_DOSE):
+            self._tratar_saturacao_alta_dose()
+            return
+        if frame.endswith("satLeit"):
+            # Pacotes incompletos e indicadores V/E/F/L não são aliases.
+            return
+
+        data_frame = frame[:5] in ("#L1%A", "#L1%B", "#L1%E", "#L1%T", "#L1%D")
+        if self.high_dose_state == ESTADO_ALTA_DOSE_AGUARDANDO_FILTRO:
+            return
+        if self.high_dose_state == ESTADO_ALTA_DOSE_REINICIANDO:
+            if not data_frame:
+                return
+            self._definir_estado_alta_dose(ESTADO_LEITURA_ALTA_DOSE)
+            self.high_dose_restart_locked = False
         # O frame D fecha a amostra (ultima coluna); os demais sao colunas
         # intermediarias. Cada linha comeca pelo Tempo (ver registrar_valor).
         if frame.startswith("#L1%D"):
@@ -2811,6 +3245,11 @@ class TelaPrincipalLeitora(Screen):
             potencia = tela.ids.potencia_input.text.strip()
             tempo_zeramento = tela.ids.tempo_zeramento_input.text.strip()
             potencia_zeramento = tela.ids.potencia_zeramento_input.text.strip()
+
+            if not self.salvar_fled_atual():
+                lbl_erro.text = "Invalid fLed value!"
+                popupNomeArquivo.open()
+                return
 
             campos_validos = (
                 self._validar_campo_1_digito(modo, "M")
