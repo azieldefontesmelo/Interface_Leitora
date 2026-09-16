@@ -11,8 +11,10 @@ deve abrir a `COM5`.
 3. Selecione `COM5`.
 4. Clique em `Connect` e depois em `Start`.
 
-O simulador envia leitura, corrente, tempo e luz a cada 100 ms. O LED do
-Canvas acende durante a leitura.
+O simulador envia leitura, corrente, tempo e luz a cada 100 ms. O tempo da
+leitura é obtido do parâmetro `L` recebido na string de configuração, como
+`L03000` (3 segundos). Ao terminar, o simulador apaga o LED, para a geração
+de amostras e envia `#L1%I0000101&` (fim da leitura).
 
 Se as portas tiverem outros números, altere `PORTA_SERIAL` no início do
 `simulador_osl.py` para a segunda porta do par.

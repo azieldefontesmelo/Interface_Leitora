@@ -1,4 +1,5 @@
 import json
+import re
 import sqlite3
 import tempfile
 import traceback
@@ -23,9 +24,15 @@ Config.set("graphics", "window_state", "maximized")
 
 from kivy.app import App
 from kivy.clock import Clock
+from kivy.core.clipboard import Clipboard
 from kivy.core.window import Window
 from kivy.lang import Builder
-from kivy.properties import BooleanProperty, NumericProperty, StringProperty
+from kivy.metrics import dp
+from kivy.properties import (
+    BooleanProperty,
+    NumericProperty,
+    StringProperty,
+)
 from kivy.uix.button import Button
 from kivy.uix.checkbox import CheckBox
 from kivy.uix.togglebutton import ToggleButton
@@ -117,6 +124,49 @@ COMANDO_PARAMETROS_PADRAO = "#S1%M1G4L03000P4Z05000Q4&"
 COMANDO_INICIAL = COMANDO_PARAMETROS_PADRAO
 FRAME_ALTA_DOSE = "#L1%AsatLeit&"
 COMANDO_CONFIG_ALTA_DOSE = "#S1%M1G3L03000P1Z01000Q4&"
+# Catalogo de strings do firmware usado pelo console de manutencao. Os
+# comandos de telemetria nao ficam nesta lista porque sao respostas do Mega;
+# eles sao classificados automaticamente na analise RX.
+CONSOLE_COMANDOS_CATALOGO = (
+    ("Supervisório", "#S1%C0000&", "Stand-by"),
+    ("Supervisório", "#S1%C0001&", "Iniciar processo automático"),
+    ("Supervisório", "#S1%C0010&", "Parar processo"),
+    ("Supervisório", "#S1%C0011&", "Executar autoteste"),
+    ("Supervisório", "#S1%C0100&", "Descartar dosímetro aprovado"),
+    ("Supervisório", "#S1%C0101&", "Descartar dosímetro não aprovado"),
+    ("Supervisório", "#S1%C0110&", "Confirmar leitura do código de barras"),
+    ("Supervisório", "#S1%C0111&", "Solicitar leitura do dosímetro"),
+    ("Supervisório", "#S1%C1000&", "Solicitar zeramento"),
+    ("Supervisório", "#S1%C1001&", "Habilitar equipamento / botão"),
+    ("Supervisório", "#S1%C1010&", "Desabilitar equipamento / botão"),
+    ("Supervisório", "#S1%C1011&", "Iniciar modo de zeramento"),
+    ("SUDO", "#S1%SC1001&", "Leitura direta, sem mecânica"),
+    ("SUDO", "#S1%SC1010&", "Parar leitura e desligar LED"),
+    ("SUDO", "#S1%SC1011&", "Ligar LED de zeramento"),
+    ("SUDO", "#S1%SC1100&", "Ligar LED de leitura"),
+    ("Parâmetros", COMANDO_PARAMETROS_PADRAO, "Configuração normal (P4)"),
+    ("Parâmetros", COMANDO_CONFIG_ALTA_DOSE, "Configuração de alta dose (P1)"),
+    ("Parâmetros", "#S1%M1G3L03000P4Z05000Q2&", "Exemplo automático"),
+    ("Parâmetros", "#S1%M1G3L30000P4Z30000Q2&", "Exemplo com botão"),
+    ("Parâmetros", "#S1%M3G3L03000P2Z03000Q4&", "Configuração de autoteste"),
+    ("Parâmetros", "#S1%M1G3L60000P4Z01000Q4&", "Configuração de leitura"),
+    ("Parâmetros", "#S1%M3G3L60000P2Z03000Q4&", "Configuração de zeramento"),
+    ("Motor", "#C1%C000&", "Mover para a origem"),
+    ("Motor", "#C1%C001&", "Posicionar fora da torre / HP10"),
+    ("Motor", "#C1%C010&", "Posicionar em HP10"),
+    ("Motor", "#C1%C011&", "Posicionar em HP07"),
+    ("Motor", "#C1%C100&", "Posicionar para zeramento"),
+    ("Motor", "#C1%C101&", "Posicionar para descarte aprovado"),
+    ("Motor", "#C1%C110&", "Posicionar para descarte não aprovado"),
+    ("Contador", "start&", "Iniciar aquisição no contador"),
+    ("Contador", "stop&", "Parar aquisição no contador"),
+)
+CONSOLE_MAX_LINHAS = 500
+PADRAO_PARAMETROS_RE = re.compile(
+    r"^#S1%M(?P<modo>\d)G(?P<ganho>\d)"
+    r"L(?P<tempo_leitura>\d{1,6})P(?P<potencia>\d)"
+    r"Z(?P<tempo_zeramento>\d{1,6})Q(?P<potencia_zeramento>\d)&$"
+)
 ESTADO_LEITURA_NORMAL = "LEITURA_NORMAL"
 ESTADO_ALTA_DOSE_ENVIANDO_CONFIG = "ALTA_DOSE_ENVIANDO_CONFIG"
 ESTADO_ALTA_DOSE_AGUARDANDO_FILTRO = "ALTA_DOSE_AGUARDANDO_FILTRO"
@@ -758,6 +808,7 @@ class TelaPrincipalLeitora(Screen):
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
         self.database = None
+        self.serial_console = None
         self.caminho_arquivo = None
         self.serial_connection = None
         self.buffer_serial = ""
@@ -795,6 +846,7 @@ class TelaPrincipalLeitora(Screen):
         self.high_dose_popup = None
         self.high_dose_restart_button = None
         self.high_dose_restart_locked = False
+        self._comando_parametros_normal = COMANDO_PARAMETROS_PADRAO
         self.last_dose_details = None
         self.fled_by_pled = dict(FLED_PADRAO_POR_PLED)
         self._selected_pled = "4"
@@ -920,7 +972,7 @@ class TelaPrincipalLeitora(Screen):
                         elif value is not None:
                             fled_by_pled[pled] = parse_number(
                                 value,
-                                f"fLed P{pled}",
+                                f"Fred P{pled}",
                                 positive=True,
                             )
         except (AttributeError, OSError, TypeError, ValueError, json.JSONDecodeError):
@@ -963,7 +1015,7 @@ class TelaPrincipalLeitora(Screen):
         field.text = "" if value is None else f"{float(value):.10g}"
 
     def salvar_fled_atual(self):
-        """Validate and persist the fLed associated with the selected PLed."""
+        """Validate and persist the Fred associated with the selected PLed."""
         try:
             screen = self.manager.get_screen("parametros")
             pled = screen.ids.potencia_input.text.strip()
@@ -971,16 +1023,16 @@ class TelaPrincipalLeitora(Screen):
         except (AttributeError, KeyError):
             return False
         if pled not in FLED_PADRAO_POR_PLED:
-            self.atualizar_status("PLed inválido para salvar fLed.")
+            self.atualizar_status("PLed inválido para salvar Fred.")
             return False
         if not text_value:
             if pled not in ("2", "3"):
-                self.atualizar_status(f"fLed de P{pled} deve ser maior que zero.")
+                self.atualizar_status(f"Fred de P{pled} deve ser maior que zero.")
                 return False
             value = None
         else:
             try:
-                value = parse_number(text_value, f"fLed P{pled}", positive=True)
+                value = parse_number(text_value, f"Fred P{pled}", positive=True)
             except ValueError as error:
                 self.atualizar_status(str(error))
                 return False
@@ -988,7 +1040,7 @@ class TelaPrincipalLeitora(Screen):
         try:
             self._salvar_configuracoes()
         except OSError as error:
-            self.atualizar_status(f"Não foi possível salvar fLed: {error}")
+            self.atualizar_status(f"Não foi possível salvar Fred: {error}")
             return False
         return True
 
@@ -996,8 +1048,8 @@ class TelaPrincipalLeitora(Screen):
         pled = str(pled).strip()
         value = self.fled_by_pled.get(pled)
         if value is None:
-            raise ValueError(f"fLed de P{pled} ainda não foi calibrado")
-        return parse_number(value, f"fLed P{pled}", positive=True)
+            raise ValueError(f"Fred de P{pled} ainda não foi calibrado")
+        return parse_number(value, f"Fred P{pled}", positive=True)
 
     def _sincronizar_botao_modo_bl(self):
         try:
@@ -1715,6 +1767,10 @@ class TelaPrincipalLeitora(Screen):
         self._cancelar_watchdogs_serial()
         if not self.log_arquivo:
             return
+        was_high_dose = bool(
+            self.applied_parameters
+            and self.applied_parameters.get("high_dose")
+        )
         nome = self.log_arquivo.name
         completed_channel = (
             self.applied_parameters.get("dose_channel")
@@ -1765,6 +1821,8 @@ class TelaPrincipalLeitora(Screen):
             if self.high_dose_state != ESTADO_LEITURA_NORMAL:
                 self._definir_estado_alta_dose(ESTADO_LEITURA_FINALIZADA)
                 self._resetar_estado_alta_dose()
+            if was_high_dose:
+                self._restaurar_parametros_apos_alta_dose()
 
     def salvar_log(self, mensagem):
         if self.log_arquivo:
@@ -1853,7 +1911,7 @@ class TelaPrincipalLeitora(Screen):
             )
             net_signal = (float(self.soma) * fled) - float(context["baseline"])
             formula = (
-                "|(soma × fLed) − linha_de_base| × RCF × ECC × Fang × Fenerg"
+                "|(soma × Fred) − linha_de_base| × RCF × ECC × Fang × Fenerg"
             )
         else:
             result = calculate_dose(
@@ -1892,7 +1950,7 @@ class TelaPrincipalLeitora(Screen):
             return
         text = (
             f"modo={details['mode']}; soma={self._numero_auditoria(details['sum'])}; "
-            f"fLed={'—' if details['fled'] is None else self._numero_auditoria(details['fled'])}; "
+            f"Fred={'—' if details['fled'] is None else self._numero_auditoria(details['fled'])}; "
             f"linha_de_base={self._numero_auditoria(details['baseline'])}; "
             f"RCF={self._numero_auditoria(details['rcf'])}; "
             f"ECC={self._numero_auditoria(details['ecc'])}; "
@@ -1944,7 +2002,7 @@ class TelaPrincipalLeitora(Screen):
         persisted_notes = notes
         if high_dose:
             high_dose_note = (
-                "Alta dose; fLed="
+                "Alta dose; Fred="
                 f"{self._numero_auditoria(self.applied_parameters.get('fled', 1.0))}"
             )
             persisted_notes = (
@@ -2507,7 +2565,7 @@ class TelaPrincipalLeitora(Screen):
                 ("Fórmula", details["formula"]),
                 ("Soma", self._numero_auditoria(details["sum"])),
                 (
-                    "fLed",
+                    "Fred",
                     "—" if details["fled"] is None else self._numero_auditoria(details["fled"]),
                 ),
                 ("Linha de base", self._numero_auditoria(details["baseline"])),
@@ -2515,7 +2573,7 @@ class TelaPrincipalLeitora(Screen):
                 ("ECC", self._numero_auditoria(details["ecc"])),
                 ("Fang", self._numero_auditoria(details["fang"])),
                 ("Fenerg", self._numero_auditoria(details["fenerg"])),
-                ("Dose calculada", f"{self._numero_auditoria(details['dose'])} mSv"),
+                ("Dose calculada", f"{float(details['dose']):.3f} mSv"),
             )
             grid = GridLayout(cols=2, spacing=6)
             for name, value in rows:
@@ -2707,9 +2765,6 @@ class TelaPrincipalLeitora(Screen):
         )
 
     def _registrar_log_serial(self, direcao, dados):
-        if not self.log_serial_arquivo:
-            return
-
         # Mantém cada evento em uma linha sem perder CR/LF recebidos.
         if isinstance(dados, (bytes, bytearray, memoryview)):
             texto = bytes(dados).decode("ascii", errors="backslashreplace")
@@ -2717,6 +2772,17 @@ class TelaPrincipalLeitora(Screen):
             texto = str(dados)
         texto = texto.replace("\r", "\\r").replace("\n", "\\n")
         horario = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
+
+        # O console recebe uma cópia thread-safe do evento mesmo quando a
+        # gravação em arquivo não está ativa (por exemplo, durante testes ou
+        # em uma conexão recém-aberta).
+        console = getattr(self, "serial_console", None)
+        if console is not None:
+            console.enfileirar_evento_serial(direcao, texto, horario)
+
+        if not self.log_serial_arquivo:
+            return
+
         with self.serial_log_lock:
             try:
                 self.log_serial_arquivo.write(
@@ -2762,14 +2828,16 @@ class TelaPrincipalLeitora(Screen):
         self.conectar_serial()
 
 
-    def conectar_serial(self, *args):
-        lbl_erro.text = "Wait a Moment."
-        popupNomeArquivo.open()
-        self.bloquear_tela()
+    def conectar_serial(self, *args, mostrar_aguarde=True):
         porta = self.ids.porta_spinner.text
         if porta in ("", "Porta", "COM Port"):
             self.atualizar_status("Selecione uma porta serial.")
             return
+
+        if mostrar_aguarde:
+            lbl_erro.text = "Wait a Moment."
+            popupNomeArquivo.open()
+            self.bloquear_tela()
 
         try:
             self.desconectar_serial(atualizar_botao=False)
@@ -3033,6 +3101,7 @@ class TelaPrincipalLeitora(Screen):
             if callable(flush):
                 flush()
             self._registrar_log_serial("TX", comando)
+            self._atualizar_setup_comando(comando)
             self.atualizar_status(f"Enviado: {comando}")
             return True
         except (OSError, serial.SerialException) as erro:
@@ -3041,6 +3110,41 @@ class TelaPrincipalLeitora(Screen):
             if finalizar_em_erro and self.log_arquivo:
                 self.fechar_log(status="ERRO", notes=str(erro))
             return False
+
+    def _atualizar_setup_comando(self, comando):
+        """Mirror a transmitted parameter command in the Setup screen."""
+        match = PADRAO_PARAMETROS_RE.fullmatch(str(comando).strip())
+        if not match:
+            return
+
+        try:
+            tela = self.manager.get_screen("parametros")
+            valores = match.groupdict()
+            tela.ids.modo_input.text = valores["modo"]
+            tela.ids.ganho_input.text = valores["ganho"]
+            tela.ids.tempo_leitura_input.text = valores["tempo_leitura"].zfill(5)
+            tela.ids.potencia_input.text = valores["potencia"]
+            tela.ids.tempo_zeramento_input.text = valores["tempo_zeramento"].zfill(5)
+            tela.ids.potencia_zeramento_input.text = valores["potencia_zeramento"]
+            self.tempo_leitura = valores["tempo_leitura"]
+        except (AttributeError, KeyError):
+            return
+
+        if self.high_dose_state not in ESTADOS_ALTA_DOSE_PENDENTE and (
+            self.high_dose_state != ESTADO_LEITURA_ALTA_DOSE
+        ):
+            self._comando_parametros_normal = str(comando).strip()
+
+    def _restaurar_parametros_apos_alta_dose(self):
+        """Restore the normal setup, with stimulation intensity P4."""
+        comando = self._comando_parametros_normal or COMANDO_PARAMETROS_PADRAO
+        match = PADRAO_PARAMETROS_RE.fullmatch(comando)
+        if match:
+            inicio, fim = match.span("potencia")
+            comando = f"{comando[:inicio]}4{comando[fim:]}"
+        else:
+            comando = COMANDO_PARAMETROS_PADRAO
+        self.enviar_serial(comando, finalizar_em_erro=False)
 
     def ler_serial(self, dt):
         # A leitura física acontece em _loop_leitor_serial. Este callback só
@@ -3261,7 +3365,7 @@ class TelaPrincipalLeitora(Screen):
             potencia_zeramento = tela.ids.potencia_zeramento_input.text.strip()
 
             if not self.salvar_fled_atual():
-                lbl_erro.text = "Invalid fLed value!"
+                lbl_erro.text = "Invalid Fred value!"
                 popupNomeArquivo.open()
                 return
 
@@ -3353,6 +3457,404 @@ class LinhaTabelaDados(BoxLayout):
     #        self.selection_callback(self.record)
     #        return True
     #    return False
+
+
+class ConsoleLogLinha(Label):
+    """Linha visual do console serial, com fonte e altura definidas no KV."""
+
+    pass
+
+
+class TelaConsoleSerial(Screen):
+    """Console técnico que acompanha a conexão serial da tela principal."""
+
+    conectado = BooleanProperty(False)
+    estado_conexao = StringProperty("Desconectado")
+    status_console = StringProperty(
+        "Console pronto. Conecte uma porta para iniciar o monitoramento."
+    )
+    filtro = StringProperty("Tudo")
+    log_vazio = BooleanProperty(True)
+    rx_count_text = StringProperty("0")
+    tx_count_text = StringProperty("0")
+    aviso_count_text = StringProperty("0")
+    erro_count_text = StringProperty("0")
+    bytes_count_text = StringProperty("0")
+    frames_count_text = StringProperty("0")
+    invalid_count_text = StringProperty("0")
+    ultimo_evento = StringProperty("—")
+    ultima_analise = StringProperty("Aguardando tráfego serial")
+    _FILTROS = ("Tudo", "RX", "TX", "Avisos", "Erros")
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.main_screen = None
+        self._fila_eventos = Queue()
+        self._eventos = deque(maxlen=CONSOLE_MAX_LINHAS)
+        self._rx_count = 0
+        self._tx_count = 0
+        self._aviso_count = 0
+        self._erro_count = 0
+        self._bytes_count = 0
+        self._catalogo_popup = None
+        self._catalogo_lista = None
+        self._catalogo_busca = ""
+        Clock.schedule_interval(self._processar_eventos, 0.05)
+        Clock.schedule_interval(self._sincronizar_estado, 0.25)
+        Clock.schedule_once(self._preparar_pagina, 0)
+
+    def _obter_main(self):
+        if self.main_screen is not None:
+            return self.main_screen
+        if self.manager and self.manager.has_screen("main"):
+            self.main_screen = self.manager.get_screen("main")
+        return self.main_screen
+
+    def on_pre_enter(self, *_args):
+        self._preparar_pagina()
+
+    def _preparar_pagina(self, *_args):
+        main = self._obter_main()
+        if main is None:
+            return
+        self._sincronizar_estado()
+        self._processar_eventos()
+
+    def _sincronizar_estado(self, *_args):
+        main = self._obter_main()
+        if main is None:
+            return
+        try:
+            aberta = bool(main.serial_aberta())
+            porta = main.ids.porta_spinner.text
+        except (AttributeError, KeyError):
+            return
+
+        mudou = aberta != self.conectado
+        self.conectado = aberta
+        self.estado_conexao = (
+            f"Conectado • {porta} @ {BAUD_RATE:,}".replace(",", ".")
+            if aberta
+            else "Desconectado"
+        )
+        self.frames_count_text = str(getattr(main, "serial_frames_received", 0))
+        self.invalid_count_text = str(
+            getattr(main, "serial_invalid_frames", 0)
+        )
+        self.bytes_count_text = str(getattr(main, "serial_bytes_received", 0))
+        if mudou and aberta:
+            self.status_console = (
+                "Conexão ativa. O console está acompanhando RX/TX."
+            )
+        elif mudou and not aberta:
+            self.status_console = "Serial desconectada."
+
+    def set_filtro(self, filtro):
+        if filtro not in self._FILTROS:
+            return
+        self.filtro = filtro
+        self._renderizar_log()
+
+    @staticmethod
+    def _normalizar_evento(dados):
+        if isinstance(dados, (bytes, bytearray, memoryview)):
+            texto = bytes(dados).decode("ascii", errors="backslashreplace")
+        else:
+            texto = str(dados)
+        return texto.replace("\r", "\\r").replace("\n", "\\n")
+
+    def enfileirar_evento_serial(self, direcao, dados, horario=None):
+        """Recebe eventos de qualquer thread e deixa a UI consumi-los depois."""
+
+        texto = self._normalizar_evento(dados)
+        horario = horario or datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
+        self._fila_eventos.put((str(horario), str(direcao).upper(), texto))
+
+    @staticmethod
+    def _categoria_evento(direcao):
+        direcao = str(direcao).upper()
+        if "ERRO" in direcao or "ERROR" in direcao:
+            return "Erros"
+        if direcao in ("RX", "TX"):
+            return direcao
+        return "Avisos"
+
+    @staticmethod
+    def _analisar_evento(direcao, texto):
+        if "ERRO" in str(direcao).upper() or "ERROR" in str(direcao).upper():
+            return "Erro de comunicação"
+        frame = str(texto).replace("\\r", "").replace("\\n", "").strip()
+        if "satLeit" in frame:
+            return "Saturação detectada"
+        if frame.startswith(("#L1%A", "#L1%B", "#L1%V", "#L1%E", "#L1%F", "#L1%L")):
+            return "Telemetria"
+        if frame.startswith(("#L1%I", "#L1%M", "#L1%T")):
+            return "Estado do equipamento"
+        if frame.startswith("#PM"):
+            return "Resposta do motor"
+        if frame.startswith("#C1"):
+            return "Comando do motor"
+        if frame.startswith("#S1"):
+            return "Comando do supervisório"
+        if frame in ("start&", "stop&"):
+            return "Contador"
+        if str(direcao).upper() == "TX":
+            return "Comando manual"
+        return "Evento do sistema"
+
+    @staticmethod
+    def _cor_evento(categoria):
+        return {
+            "RX": (0.43, 0.78, 1, 1),
+            "TX": (0.43, 0.94, 0.63, 1),
+            "Erros": (1, 0.43, 0.43, 1),
+            "Avisos": (1, 0.78, 0.35, 1),
+        }.get(categoria, (0.82, 0.86, 0.92, 1))
+
+    def _processar_eventos(self, *_args):
+        houve_evento = False
+        while True:
+            try:
+                horario, direcao, texto = self._fila_eventos.get_nowait()
+            except Empty:
+                break
+            houve_evento = True
+            categoria = self._categoria_evento(direcao)
+            analise = self._analisar_evento(direcao, texto)
+            self._eventos.append(
+                {
+                    "horario": horario,
+                    "direcao": direcao,
+                    "texto": texto,
+                    "categoria": categoria,
+                    "analise": analise,
+                }
+            )
+            if categoria == "RX":
+                self._rx_count += 1
+                self._bytes_count += len(texto.encode("ascii", errors="replace"))
+            elif categoria == "TX":
+                self._tx_count += 1
+            elif categoria == "Erros":
+                self._erro_count += 1
+            else:
+                self._aviso_count += 1
+            self.ultimo_evento = f"[{direcao}] {texto}"
+            self.ultima_analise = analise
+
+        if houve_evento:
+            self.rx_count_text = str(self._rx_count)
+            self.tx_count_text = str(self._tx_count)
+            self.aviso_count_text = str(self._aviso_count)
+            self.erro_count_text = str(self._erro_count)
+            self._renderizar_log()
+
+    def _renderizar_log(self):
+        visiveis = [
+            evento
+            for evento in self._eventos
+            if self.filtro == "Tudo" or evento["categoria"] == self.filtro
+        ]
+        self.log_vazio = not visiveis
+        try:
+            lista = self.ids.console_log_list
+        except (AttributeError, KeyError):
+            return
+        lista.clear_widgets()
+        for evento in visiveis:
+            linha = ConsoleLogLinha(
+                text=(
+                    f"[{evento['horario']}]  {evento['direcao']:<9} "
+                    f"{evento['texto']}   · {evento['analise']}"
+                ),
+                color=self._cor_evento(evento["categoria"]),
+            )
+            lista.add_widget(linha)
+        if visiveis:
+            Clock.schedule_once(self._rolar_para_ultima_linha, 0)
+
+    def _rolar_para_ultima_linha(self, *_args):
+        try:
+            self.ids.console_scroll.scroll_y = 0
+        except (AttributeError, KeyError):
+            pass
+
+    def _texto_log(self):
+        return "\n".join(
+            f"[{evento['horario']}] [{evento['direcao']}] {evento['texto']}"
+            for evento in self._eventos
+        )
+
+    def limpar_console(self, *_args):
+        self._eventos.clear()
+        self._rx_count = 0
+        self._tx_count = 0
+        self._aviso_count = 0
+        self._erro_count = 0
+        self._bytes_count = 0
+        self.rx_count_text = "0"
+        self.tx_count_text = "0"
+        self.aviso_count_text = "0"
+        self.erro_count_text = "0"
+        self.ultimo_evento = "—"
+        self.ultima_analise = "Aguardando tráfego serial"
+        self.status_console = "Console limpo; o arquivo de log foi preservado."
+        self._renderizar_log()
+
+    def copiar_log(self, *_args):
+        texto = self._texto_log()
+        if not texto:
+            self.status_console = "Não há linhas para copiar."
+            return
+        try:
+            Clipboard.copy(texto)
+            self.status_console = "Log copiado para a área de transferência."
+        except Exception as erro:
+            self.status_console = f"Não foi possível copiar o log: {erro}"
+
+    def exportar_log(self, *_args):
+        texto = self._texto_log()
+        if not texto:
+            self.status_console = "Não há linhas para exportar."
+            return
+        pasta = ASSETS_DIR / "exports"
+        pasta.mkdir(parents=True, exist_ok=True)
+        caminho = pasta / datetime.now().strftime("serial_console_%Y%m%d_%H%M%S.txt")
+        try:
+            caminho.write_text(texto + "\n", encoding="utf-8")
+        except OSError as erro:
+            self.status_console = f"Erro ao exportar o log: {erro}"
+            return
+        self.status_console = f"Log exportado para {caminho.name}."
+
+    def enviar_comando_manual(self, *_args):
+        main = self._obter_main()
+        if main is None or not main.serial_aberta():
+            self.status_console = "Conecte a serial antes de enviar comandos."
+            return False
+        try:
+            comando = self.ids.console_command_input.text.strip()
+        except (AttributeError, KeyError):
+            return False
+        if not comando:
+            self.status_console = "Digite um comando ou use o catálogo."
+            return False
+        if not comando.endswith("&"):
+            comando += "&"
+        if "&" in comando[:-1]:
+            self.status_console = "Comando inválido: há um terminador '&' no meio."
+            return False
+        try:
+            comando.encode("ascii")
+        except UnicodeEncodeError:
+            self.status_console = "Comando inválido: use somente caracteres ASCII."
+            return False
+        enviado = main.enviar_serial(comando, finalizar_em_erro=False)
+        if enviado:
+            self.ids.console_command_input.text = ""
+            self.status_console = f"Comando enviado: {comando}"
+        return enviado
+
+    def abrir_catalogo_comandos(self, *_args):
+        if self._catalogo_popup is not None:
+            self._catalogo_popup.open()
+            return
+
+        conteudo = BoxLayout(
+            orientation="vertical",
+            spacing=dp(8),
+            padding=dp(12),
+        )
+        conteudo.add_widget(
+            Label(
+                text="Formato: #S1%{comando}{parâmetros}&",
+                size_hint_y=None,
+                height=dp(24),
+                halign="left",
+                text_size=(None, None),
+            )
+        )
+        busca = TextInput(
+            hint_text="Pesquisar comando, grupo ou descrição...",
+            multiline=False,
+            size_hint_y=None,
+            height=dp(40),
+        )
+        busca.bind(text=lambda _campo, texto: self.filtrar_catalogo(texto))
+        conteudo.add_widget(busca)
+
+        rolagem = ScrollView(do_scroll_x=False, bar_width=dp(8))
+        lista = GridLayout(cols=1, spacing=dp(6), size_hint_y=None)
+        lista.bind(minimum_height=lista.setter("height"))
+        rolagem.add_widget(lista)
+        conteudo.add_widget(rolagem)
+
+        fechar = Button(text="Fechar", size_hint_y=None, height=dp(40))
+        conteudo.add_widget(fechar)
+        popup = Popup(
+            title="Catálogo de strings do protocolo",
+            content=conteudo,
+            size_hint=(0.78, 0.86),
+            auto_dismiss=True,
+        )
+        fechar.bind(on_release=popup.dismiss)
+        popup.bind(on_dismiss=lambda *_event: self._limpar_popup_catalogo())
+        self._catalogo_popup = popup
+        self._catalogo_lista = lista
+        self._catalogo_busca = ""
+        self._renderizar_catalogo()
+        popup.open()
+
+    def _limpar_popup_catalogo(self):
+        self._catalogo_popup = None
+        self._catalogo_lista = None
+
+    def filtrar_catalogo(self, texto):
+        self._catalogo_busca = str(texto or "")
+        self._renderizar_catalogo()
+
+    def _renderizar_catalogo(self):
+        if self._catalogo_lista is None:
+            return
+        busca = self._catalogo_busca.casefold().strip()
+        self._catalogo_lista.clear_widgets()
+        for grupo, comando, descricao in CONSOLE_COMANDOS_CATALOGO:
+            texto_busca = f"{grupo} {comando} {descricao}".casefold()
+            if busca and busca not in texto_busca:
+                continue
+            linha = BoxLayout(
+                orientation="vertical",
+                spacing=dp(2),
+                padding=(dp(8), dp(5)),
+                size_hint_y=None,
+                height=dp(64),
+            )
+            topo = BoxLayout(spacing=dp(8))
+            topo.add_widget(
+                Label(
+                    text=f"{comando}\n{grupo} • {descricao}",
+                    halign="left",
+                    valign="middle",
+                    text_size=(None, None),
+                )
+            )
+            inserir = Button(text="Inserir", size_hint_x=None, width=dp(88))
+            inserir.bind(
+                on_release=lambda _botao, valor=comando: self.inserir_comando(valor)
+            )
+            topo.add_widget(inserir)
+            linha.add_widget(topo)
+            self._catalogo_lista.add_widget(linha)
+
+    def inserir_comando(self, comando):
+        try:
+            self.ids.console_command_input.text = comando
+            self.ids.console_command_input.focus = True
+        except (AttributeError, KeyError):
+            return
+        if self._catalogo_popup is not None:
+            self._catalogo_popup.dismiss()
+        self.status_console = f"Comando inserido: {comando}"
 
 
 class TelaParametrosLeitura(Screen):
@@ -4946,7 +5448,10 @@ class AplicativoInterfaceOSL(App):
             self.database = Database()
         root = Builder.load_file(resource_path("interface_OSL.kv"))
         main_screen = root.get_screen("main")
+        console_screen = root.get_screen("console_serial")
         main_screen.database = self.database
+        console_screen.main_screen = main_screen
+        main_screen.serial_console = console_screen
         root.get_screen("banco_dados").database = self.database
         main_screen.carregar_configuracoes()
         return root

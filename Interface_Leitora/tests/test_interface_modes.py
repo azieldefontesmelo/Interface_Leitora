@@ -171,7 +171,7 @@ class InterfaceModeTestCase(unittest.TestCase):
 
         measurement = self.database.get_measurement(measurement_id)
         self.assertEqual(measurement["dose_msv"], 190)
-        self.assertIn("Alta dose; fLed=100", measurement["notes"])
+        self.assertIn("Alta dose; Fred=100", measurement["notes"])
         self.assertEqual(self.main.ids.label_dose.text, "190.000")
         self.assertEqual(self.main.last_dose_details["mode"], "Alta dose")
         self.assertEqual(self.main.high_dose_state, interface_OSL.ESTADO_LEITURA_NORMAL)
@@ -209,6 +209,40 @@ class InterfaceModeTestCase(unittest.TestCase):
             interface_OSL.COMANDO_CONFIG_ALTA_DOSE.encode("ascii"),
         )
         self.main.fechar_log(status="INTERROMPIDO", notes="teste")
+
+    def test_transmitted_parameters_are_mirrored_in_setup(self):
+        serial_port = FakeSerial()
+        self.main.serial_connection = serial_port
+
+        self.assertTrue(
+            self.main.enviar_serial("#S1%M2G3L10000P1Z01000Q4&")
+        )
+
+        setup = self.root.get_screen("parametros")
+        self.assertEqual(setup.ids.modo_input.text, "2")
+        self.assertEqual(setup.ids.ganho_input.text, "3")
+        self.assertEqual(setup.ids.tempo_leitura_input.text, "10000")
+        self.assertEqual(setup.ids.potencia_input.text, "1")
+        self.assertEqual(setup.ids.tempo_zeramento_input.text, "01000")
+        self.assertEqual(setup.ids.potencia_zeramento_input.text, "4")
+
+    def test_high_dose_completion_restores_stimulation_intensity_four(self):
+        serial_port = FakeSerial()
+        self.main.serial_connection = serial_port
+        self.main.ids.nome_arquivo_input.text = "high-dose-restore.txt"
+
+        self.main.botao_leitura()
+        self.main.processar_frame(interface_OSL.FRAME_ALTA_DOSE)
+        self.assertEqual(self.root.get_screen("parametros").ids.potencia_input.text, "1")
+        self.assertTrue(self.main._confirmar_filtro_alta_dose())
+        self.main.processar_frame("#L1%A2&")
+        self.main.processar_frame("#L1%E45&")
+        self.main.f_fechar_log = True
+        self.main.processar_frame("#L1%D471&")
+
+        setup = self.root.get_screen("parametros")
+        self.assertEqual(setup.ids.potencia_input.text, "4")
+        self.assertEqual(serial_port.writes[-1], b"#S1%M1G4L03000P4Z05000Q4&")
 
     def test_second_saturation_after_restart_finishes_as_error(self):
         serial_port = FakeSerial()
@@ -249,6 +283,27 @@ class InterfaceModeTestCase(unittest.TestCase):
         self.assertEqual(self.main.formatar_dose(0), "0")
         self.assertEqual(self.main.formatar_dose(0.067), "0.067")
         self.assertEqual(self.main.formatar_dose(12.3454), "12.345")
+
+    def test_dose_details_popup_formats_dose_with_three_decimals(self):
+        self.main.last_dose_details = {
+            "mode": "Normal",
+            "formula": "soma × RCF × ECC × Fang × Fenerg",
+            "sum": 0,
+            "fled": None,
+            "baseline": 0,
+            "rcf": 1,
+            "ecc": 1,
+            "fang": 1,
+            "fenerg": 1,
+            "dose": 0,
+        }
+
+        popup = self.main.mostrar_detalhes_dose()
+        try:
+            labels = [widget.text for widget in popup.content.children[1].children]
+            self.assertIn("0.000 mSv", labels)
+        finally:
+            popup.dismiss()
 
     @classmethod
     def tearDownClass(cls):

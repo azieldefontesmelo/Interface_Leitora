@@ -123,7 +123,7 @@ def calculate_high_dose(
 ) -> float:
     """Calculate dose after saturation using the calibrated LED factor."""
     values = {
-        "fLed": fled,
+        "Fred": fled,
         "RCF": rcf,
         "ECC": ecc,
         "Fang": fang,

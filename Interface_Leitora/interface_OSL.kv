@@ -96,6 +96,18 @@
                 size: dp(34), dp(34)
                 pos: self.center_x - dp(17), self.center_y - dp(17)
 
+    BotaoBarraLateral:
+        selecionado: root.tela_ativa == "console_serial"
+        on_release: app.root.current = "console_serial"
+
+        canvas.after:
+            Color:
+                rgba: (0.95, 0.95, 0.95, 1) if self.selecionado else (0.62, 0.62, 0.62, 1)
+            Rectangle:
+                source: resource_path("assets/UI/sidebar/terminal.png")
+                size: dp(34), dp(34)
+                pos: self.center_x - dp(17), self.center_y - dp(17)
+
     Widget:
 
     BotaoBarraLateral:
@@ -149,6 +161,16 @@
     valign: "middle"
 
 
+<ConsoleLogLinha>:
+    size_hint_y: None
+    height: max(dp(24), self.texture_size[1] + dp(6))
+    text_size: self.width - dp(12), None
+    padding: dp(6), dp(3)
+    font_size: "12sp"
+    halign: "left"
+    valign: "middle"
+
+
 ScreenManager:
     size: Window.size
     pos: 0, 0
@@ -164,6 +186,350 @@ ScreenManager:
         pos: root.pos
     TelaBancoDados:
         size: root.size
+        pos: root.pos
+    TelaConsoleSerial:
+        size: root.size
+        pos: root.pos
+
+
+<TelaConsoleSerial>:
+    name: "console_serial"
+
+    canvas.before:
+        Color:
+            rgba: 0, 0, 0, 1
+        Rectangle:
+            pos: self.pos
+            size: self.size
+
+    BoxLayout:
+        orientation: "vertical"
+        size_hint: None, None
+        size: root.width - dp(56), root.height
+        pos: root.x + dp(56), root.y
+        padding: dp(12)
+        spacing: dp(12)
+
+        BoxLayout:
+            size_hint_y: None
+            height: dp(40)
+            spacing: dp(10)
+
+            BoxLayout:
+                orientation: "vertical"
+
+                Label:
+                    text: "Manutenção"
+                    font_size: "22sp"
+                    bold: True
+                    text_size: self.size
+                    halign: "left"
+                    valign: "middle"
+
+                Label:
+                    text: "Console técnico de comunicação serial"
+                    font_size: "13sp"
+                    color: 0.52, 0.67, 0.84, 1
+                    text_size: self.size
+                    halign: "left"
+                    valign: "top"
+
+            Button:
+                text: "Catálogo de strings"
+                size_hint_x: None
+                width: dp(170)
+                on_release: root.abrir_catalogo_comandos()
+
+        BoxLayout:
+            spacing: dp(12)
+
+            BoxLayout:
+                orientation: "vertical"
+                spacing: dp(8)
+                padding: dp(8)
+
+                canvas.before:
+                    Color:
+                        rgba: 0.10, 0.10, 0.10, 1
+                    RoundedRectangle:
+                        pos: self.pos
+                        size: self.size
+                        radius: [dp(7)]
+                canvas.after:
+                    Color:
+                        rgba: 0.24, 0.24, 0.24, 1
+                    Line:
+                        rounded_rectangle: (self.x, self.y, self.width, self.height, dp(7))
+                        width: 1
+
+                BoxLayout:
+                    size_hint_y: None
+                    height: dp(32)
+                    spacing: dp(8)
+
+                    Label:
+                        text: "Console serial (RX/TX)"
+                        color: 0.56, 0.79, 1, 1
+                        bold: True
+                        text_size: self.size
+                        halign: "left"
+                        valign: "middle"
+
+                    ToggleButton:
+                        text: "Tudo"
+                        group: "console_filter"
+                        state: "down" if root.filtro == "Tudo" else "normal"
+                        size_hint_x: None
+                        width: dp(58)
+                        on_release: root.set_filtro("Tudo")
+
+                    ToggleButton:
+                        text: "RX"
+                        group: "console_filter"
+                        state: "down" if root.filtro == "RX" else "normal"
+                        size_hint_x: None
+                        width: dp(48)
+                        on_release: root.set_filtro("RX")
+
+                    ToggleButton:
+                        text: "TX"
+                        group: "console_filter"
+                        state: "down" if root.filtro == "TX" else "normal"
+                        size_hint_x: None
+                        width: dp(48)
+                        on_release: root.set_filtro("TX")
+
+                    ToggleButton:
+                        text: "Avisos"
+                        group: "console_filter"
+                        state: "down" if root.filtro == "Avisos" else "normal"
+                        size_hint_x: None
+                        width: dp(72)
+                        on_release: root.set_filtro("Avisos")
+
+                    ToggleButton:
+                        text: "Erros"
+                        group: "console_filter"
+                        state: "down" if root.filtro == "Erros" else "normal"
+                        size_hint_x: None
+                        width: dp(64)
+                        on_release: root.set_filtro("Erros")
+
+                FloatLayout:
+                    canvas.before:
+                        Color:
+                            rgba: 0.03, 0.03, 0.03, 1
+                        RoundedRectangle:
+                            pos: self.pos
+                            size: self.size
+                            radius: [dp(5)]
+
+                    ScrollView:
+                        id: console_scroll
+                        # O FloatLayout mantém pos=(0, 0) quando não há
+                        # pos_hint, fazendo o console ficar sob a barra lateral.
+                        size_hint: 1, 1
+                        pos_hint: {"x": 0, "y": 0}
+                        do_scroll_x: False
+                        do_scroll_y: True
+                        scroll_type: ["bars", "content"]
+                        bar_width: dp(8)
+                        bar_color: 0.30, 0.56, 0.80, 1
+                        bar_inactive_color: 0.16, 0.24, 0.34, 0.8
+
+                        GridLayout:
+                            id: console_log_list
+                            cols: 1
+                            # O ScrollView não estica automaticamente o filho
+                            # quando a rolagem horizontal está desativada.
+                            size_hint_x: None
+                            width: self.parent.width
+                            size_hint_y: None
+                            height: self.minimum_height
+                            spacing: dp(2)
+
+                    Label:
+                        id: console_empty_state
+                        text: "Console vazio. Conecte para iniciar o monitoramento.\nAs linhas RX/TX aparecerão aqui."
+                        opacity: 1 if root.log_vazio else 0
+                        size_hint: 0.76, 0.30
+                        pos_hint: {"center_x": 0.5, "center_y": 0.5}
+                        color: 0.39, 0.49, 0.62, 1
+                        font_size: "13sp"
+                        text_size: self.size
+                        halign: "center"
+                        valign: "middle"
+
+                BoxLayout:
+                    size_hint_y: None
+                    height: dp(42)
+                    spacing: dp(7)
+
+                    TextInput:
+                        id: console_command_input
+                        hint_text: "Digite um comando, por exemplo #S1%C0001&"
+                        multiline: False
+                        disabled: not root.conectado
+                        on_text_validate: root.enviar_comando_manual()
+
+                    Button:
+                        text: "Enviar"
+                        size_hint_x: None
+                        width: dp(88)
+                        disabled: not root.conectado
+                        on_release: root.enviar_comando_manual()
+
+                    Button:
+                        text: "Limpar"
+                        size_hint_x: None
+                        width: dp(82)
+                        on_release: root.limpar_console()
+
+                    Button:
+                        text: "Copiar"
+                        size_hint_x: None
+                        width: dp(82)
+                        disabled: root.log_vazio
+                        on_release: root.copiar_log()
+
+                    Button:
+                        text: "Exportar log"
+                        size_hint_x: None
+                        width: dp(112)
+                        disabled: root.log_vazio
+                        on_release: root.exportar_log()
+
+            BoxLayout:
+                orientation: "vertical"
+                size_hint_x: 0.27
+                spacing: dp(8)
+                padding: dp(10)
+
+                canvas.before:
+                    Color:
+                        rgba: 0.13, 0.13, 0.13, 1
+                    RoundedRectangle:
+                        pos: self.pos
+                        size: self.size
+                        radius: [dp(7)]
+                canvas.after:
+                    Color:
+                        rgba: 0.28, 0.28, 0.28, 1
+                    Line:
+                        rounded_rectangle: (self.x, self.y, self.width, self.height, dp(7))
+                        width: 1
+
+                Label:
+                    text: "Análise da serial"
+                    size_hint_y: None
+                    height: dp(30)
+                    color: 0.56, 0.79, 1, 1
+                    font_size: "16sp"
+                    bold: True
+                    text_size: self.size
+                    halign: "left"
+                    valign: "middle"
+
+                GridLayout:
+                    cols: 2
+                    size_hint_y: None
+                    height: self.minimum_height
+                    row_default_height: dp(28)
+                    row_force_default: True
+                    spacing: dp(3)
+
+                    Label:
+                        text: "RX"
+                        halign: "left"
+                    Label:
+                        text: root.rx_count_text
+                        halign: "right"
+                    Label:
+                        text: "TX"
+                        halign: "left"
+                    Label:
+                        text: root.tx_count_text
+                        halign: "right"
+                    Label:
+                        text: "Avisos"
+                        halign: "left"
+                    Label:
+                        text: root.aviso_count_text
+                        halign: "right"
+                    Label:
+                        text: "Erros"
+                        halign: "left"
+                    Label:
+                        text: root.erro_count_text
+                        halign: "right"
+                    Label:
+                        text: "Bytes RX"
+                        halign: "left"
+                    Label:
+                        text: root.bytes_count_text
+                        halign: "right"
+                    Label:
+                        text: "Frames válidos"
+                        halign: "left"
+                    Label:
+                        text: root.frames_count_text
+                        halign: "right"
+                    Label:
+                        text: "Frames inválidos"
+                        halign: "left"
+                    Label:
+                        text: root.invalid_count_text
+                        halign: "right"
+
+                Label:
+                    text: "Última análise"
+                    size_hint_y: None
+                    height: dp(24)
+                    color: 0.58, 0.64, 0.73, 1
+                    text_size: self.size
+                    halign: "left"
+                    valign: "middle"
+
+                Label:
+                    text: root.ultima_analise
+                    size_hint_y: None
+                    height: dp(44)
+                    color: 0.92, 0.94, 0.98, 1
+                    text_size: self.size
+                    halign: "left"
+                    valign: "top"
+
+                Label:
+                    text: "Último evento"
+                    size_hint_y: None
+                    height: dp(24)
+                    color: 0.58, 0.64, 0.73, 1
+                    text_size: self.size
+                    halign: "left"
+                    valign: "middle"
+
+                Label:
+                    text: root.ultimo_evento
+                    color: 0.69, 0.82, 0.96, 1
+                    font_size: "11sp"
+                    text_size: self.width, None
+                    halign: "left"
+                    valign: "top"
+
+                Widget:
+
+                Label:
+                    text: root.status_console
+                    size_hint_y: None
+                    height: dp(55)
+                    color: 0.55, 0.70, 0.86, 1
+                    font_size: "11sp"
+                    text_size: self.size
+                    halign: "left"
+                    valign: "bottom"
+
+    BarraLateral:
+        tela_ativa: "console_serial"
         pos: root.pos
 
 
@@ -861,7 +1227,7 @@ ScreenManager:
                     on_text: root.manager.get_screen("main").atualizar_fled_exibido(self.text) if root.manager else None
 
                 Label:
-                    text: "fLed"
+                    text: "Fred"
                     size_hint_x: 0.45
 
                 TextInput:

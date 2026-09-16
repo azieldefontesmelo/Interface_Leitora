@@ -1,7 +1,9 @@
 """Simulador da leitora OSL usando a porta virtual COM6."""
 
 import random
+import re
 import threading
+import time
 import tkinter as tk
 from tkinter import messagebox
 
@@ -22,6 +24,8 @@ class SimuladorOSL:
         self.rodando = False
         self.contador = 0
         self.potencia = 4
+        self.tempo_leitura_ms = 3000
+        self._inicio_leitura = None
         self._montar_tela()
         self._conectar_serial()
 
@@ -84,6 +88,12 @@ class SimuladorOSL:
                 self.potencia = int(comando.split("P", 1)[1][0])
             except (IndexError, ValueError):
                 pass
+            parametros = re.search(r"L(\d{1,6})P", comando)
+            if parametros:
+                try:
+                    self.tempo_leitura_ms = max(100, int(parametros.group(1)))
+                except ValueError:
+                    self.tempo_leitura_ms = 3000
             self._enviar("#L1%I0000000&")
 
     def _enviar(self, texto):
@@ -99,6 +109,8 @@ class SimuladorOSL:
             return
         if not self.rodando:
             self.rodando = True
+            self.contador = 0
+            self._inicio_leitura = time.monotonic()
             self.status.set("Leitura em andamento")
             self._enviar_amostra()
 
@@ -106,22 +118,42 @@ class SimuladorOSL:
         if not self.rodando:
             self._desenhar_led(False)
             return
+
+        inicio = self._inicio_leitura or time.monotonic()
+        decorrido_ms = (time.monotonic() - inicio) * 1000
+        if decorrido_ms >= self.tempo_leitura_ms:
+            self._finalizar_leitura()
+            return
+
         self.contador += 1
         leitura = random.randint(900, 1800)
         corrente = random.randint(15, 45)
         luz = int(100 + self.potencia * 90 + random.randint(-20, 20))
         self._desenhar_led(True)
         self._enviar(f"#L1%A{leitura}&#L1%E{corrente}&#L1%T{self.contador}&#L1%D{luz}&")
-        self.root.after(100, self._enviar_amostra)
+        restante_ms = max(1, self.tempo_leitura_ms - decorrido_ms)
+        self.root.after(min(100, int(restante_ms)), self._enviar_amostra)
+
+    def _finalizar_leitura(self):
+        """Reproduz o estado de fim de leitura enviado pelo firmware."""
+
+        self.rodando = False
+        self._inicio_leitura = None
+        self._desenhar_led(False)
+        self._enviar("#L1%I0000101&")
+        self.status.set("Leitura concluída")
 
     def parar_leitura(self):
         self.rodando = False
+        self._inicio_leitura = None
         self._desenhar_led(False)
+        self._enviar("#L1%I0001101&")
         self.status.set("Leitura parada")
 
     def zerar(self):
         self.contador = 0
         self.rodando = False
+        self._inicio_leitura = None
         self._desenhar_led(False)
         self.status.set("Contador zerado")
 
@@ -134,6 +166,7 @@ class SimuladorOSL:
             self.status.set(f"{PORTA_SERIAL} não está conectada")
             return
         self.rodando = False
+        self._inicio_leitura = None
         self._desenhar_led(False)
         self._enviar("#L1%AsatLeit&")
         self.status.set("Alta dose simulada; aguardando ajuste do filtro")

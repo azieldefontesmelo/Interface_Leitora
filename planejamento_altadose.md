@@ -46,12 +46,12 @@ O firmware do microcontrolador/controlador não deverá ser alterado neste traba
 4. Em alta dose, calcular:
 
    ```text
-   dose = |(soma * fLed) - linha_de_base| × RCF × ECC × Fang × Fenerg
+   dose = |(soma * Fred) - linha_de_base| × RCF × ECC × Fang × Fenerg
    ```
 
 5. Fora do modo de alta dose, o cálculo atual da dose deverá permanecer inalterado.
 
-6. Na tela de configuração, exibir `fLed` ao lado de `PLed`, permitindo edição manual e persistência dos valores.
+6. Na tela de configuração, exibir `Fred` ao lado de `PLed`, permitindo edição manual e persistência dos valores.
 
 ## 3. Texto sugerido para o popup
 
@@ -88,7 +88,7 @@ Enviar comando de início pelo fluxo existente
 Reiniciar leitura em modo de alta dose
       |
       v
-Calcular com |(soma * fLed) - linha_de_base| × RCF × ECC × Fang × Fenerg
+Calcular com |(soma * Fred) - linha_de_base| × RCF × ECC × Fang × Fenerg
 ```
 
 ### Ordem obrigatória
@@ -174,18 +174,18 @@ Também há `#S1%IsatLeit&` em comentários, mas ela não é enviada pelo códig
 
 O estado `ALTA_DOSE_AGUARDANDO_FILTRO` deve ser persistido em memória durante o ciclo, para que mensagens seriais repetidas não causem múltiplos reinícios.
 
-## 8. Configuração de `fLed`
+## 8. Configuração de `Fred`
 
 ### 8.1 Tela
 
-Adicionar `fLed` imediatamente ao lado do campo `PLed`.
+Adicionar `Fred` imediatamente ao lado do campo `PLed`.
 
 Exemplo de apresentação:
 
 | Parâmetro | Valor |
 |---|---:|
 | `PLed` | `1` |
-| `fLed` | `100` |
+| `Fred` | `100` |
 
 O valor deverá ser editável manualmente e carregado da configuração salva ao abrir a tela.
 
@@ -193,7 +193,7 @@ O valor deverá ser editável manualmente e carregado da configuração salva ao
 
 ![Referência da tela Setup — posição da potência do LED](Interface_Leitora/assets/UI/referencia_setup_fled.png)
 
-A imagem acima é a referência visual da tela atual. O `fLed` deverá ser
+A imagem acima é a referência visual da tela atual. O `Fred` deverá ser
 adicionado na mesma linha de `Stimulation Intensity`, imediatamente ao lado
 do valor de `PLed`, mantendo o alinhamento, a largura e o estilo dos controles
 existentes. A potência (`PLed`) continuará sendo selecionada como hoje; o
@@ -201,7 +201,7 @@ novo campo exibirá e permitirá editar o fator correspondente.
 
 ### 8.2 Valores já definidos
 
-| `PLed` | `fLed` inicial |
+| `PLed` | `Fred` inicial |
 |---:|---:|
 | `1` | `100` |
 | `2` | não calibrado |
@@ -212,17 +212,17 @@ Não serão inventados fatores para `PLed = 2` e `PLed = 3`. Eles iniciarão com
 indefinidos (`null`/campo vazio) e deverão ser preenchidos com um valor
 positivo, finito e validado antes de serem usados em qualquer cálculo que os
 solicite. O fluxo de alta dose definido neste documento sempre envia `P1` e,
-portanto, usa `fLed = 100`.
+portanto, usa `Fred = 100`.
 
 ### 8.3 Persistência
 
 O planejamento assume um fator independente para cada potência, para evitar que a edição de um nível sobrescreva os demais:
 
 ```text
-fLed[1] = 100
-fLed[2] = null              # não calibrado
-fLed[3] = null              # não calibrado
-fLed[4] = 1
+Fred[1] = 100
+Fred[2] = null              # não calibrado
+Fred[3] = null              # não calibrado
+Fred[4] = 1
 ```
 
 Exemplo de persistência em `configuracoes.json`:
@@ -234,7 +234,7 @@ Exemplo de persistência em `configuracoes.json`:
 }
 ```
 
-Ao editar `fLed`:
+Ao editar `Fred`:
 
 - validar formato numérico;
 - impedir valor nulo ou negativo, salvo se o domínio do sistema definir outra regra;
@@ -255,19 +255,19 @@ Nenhum fator novo deverá ser aplicado fora do modo de alta dose.
 ### 9.2 Leitura em alta dose
 
 ```text
-dose_alta = |(soma * fLed) - linha_de_base| × RCF × ECC × Fang × Fenerg
+dose_alta = |(soma * Fred) - linha_de_base| × RCF × ECC × Fang × Fenerg
 ```
 
 Regras de implementação:
 
-- aplicar `fLed` somente quando o estado for `LEITURA_ALTA_DOSE`;
+- aplicar `Fred` somente quando o estado for `LEITURA_ALTA_DOSE`;
 - preservar a ordem das operações;
 - não substituir `soma`, `linha_de_base`, `RCF`, `ECC`, `Fang` ou `Fenerg` por
   valores de teste na aplicação;
 - manter precisão suficiente durante o cálculo e arredondar apenas na apresentação/saída;
-- registrar no log `soma`, `fLed`, `linha_de_base`, `RCF`, `ECC`, `Fang`,
+- registrar no log `soma`, `Fred`, `linha_de_base`, `RCF`, `ECC`, `Fang`,
   `Fenerg` e `dose` para auditoria;
-- calcular primeiro o sinal líquido `(soma * fLed) - linha_de_base`, aplicar o
+- calcular primeiro o sinal líquido `(soma * Fred) - linha_de_base`, aplicar o
   valor absoluto e só então multiplicar pelos fatores;
 - como a fórmula usa valor absoluto, uma soma abaixo da linha de base não gera
   dose negativa: o módulo da diferença é mantido no cálculo.
@@ -301,7 +301,7 @@ sem alterar o restante do painel.
 | Modo | `Normal` ou `Alta dose` |
 | Fórmula | A expressão efetivamente usada naquele ciclo |
 | Soma | Valor acumulado de `soma` |
-| `fLed` | Fator usado; `—` no modo normal |
+| `Fred` | Fator usado; `—` no modo normal |
 | Linha de base | Valor de `linha_de_base` |
 | RCF | Valor aplicado |
 | ECC | Valor aplicado |
@@ -312,7 +312,7 @@ sem alterar o restante do painel.
 Para alta dose, a fórmula exibida deverá ser:
 
 ```text
-|(soma × fLed) − linha_de_base| × RCF × ECC × Fang × Fenerg
+|(soma × Fred) − linha_de_base| × RCF × ECC × Fang × Fenerg
 ```
 
 O popup deverá mostrar os valores capturados na finalização da medição, e não
@@ -359,14 +359,14 @@ erro: deverá informar que os detalhes ainda não estão disponíveis.
 - Tornar o popup modal (`auto_dismiss = False`), sem fechamento por clique fora
   ou `Esc`, com um único botão `OK`; o botão deve ser desabilitado assim que o
   reinício começar.
-- Adicionar `fLed` ao lado de `PLed`, carregá-lo ao abrir a tela e salvar a
+- Adicionar `Fred` ao lado de `PLed`, carregá-lo ao abrir a tela e salvar a
   tabela por potência sem sobrescrever os demais níveis.
-- Validar `fLed` como número finito maior que zero. Valores indefinidos de P2/P3
+- Validar `Fred` como número finito maior que zero. Valores indefinidos de P2/P3
   permanecem editáveis, mas bloqueiam qualquer cálculo que tente usá-los.
 - Não alterar o esquema SQLite nem executar migração. Nas medições de alta
-  dose, registrar `Alta dose; fLed=<valor>` no campo `notes` já existente,
+  dose, registrar `Alta dose; Fred=<valor>` no campo `notes` já existente,
   além do detalhamento completo nos logs técnicos.
-- No log técnico, registrar no mínimo `soma`, `fLed`, `linha_de_base`, `RCF`,
+- No log técnico, registrar no mínimo `soma`, `Fred`, `linha_de_base`, `RCF`,
   `ECC`, `Fang`, `Fenerg`, sinal líquido, módulo da diferença, dose final e
   transições de estado.
 
@@ -381,7 +381,7 @@ de testes serial confirmar a ordem
 
 - `Interface_Leitora/interface_OSL.py`: estados, popup, envio, reinício e
   cálculo;
-- `Interface_Leitora/interface_OSL.kv`: campo `fLed` e controles modais;
+- `Interface_Leitora/interface_OSL.kv`: campo `Fred` e controles modais;
 - `Interface_Leitora/assets/UI/referencia_setup_fled.png`: referência visual da
   posição do novo campo na tela Setup;
 - `Interface_Leitora/serial_protocol.py`: validação do frame completo;
@@ -416,11 +416,11 @@ Não executar portas seriais durante a criação deste documento. A validação 
 | T03 | Conteúdo do popup | Saturação válida | Popup informa alta dose e ajuste manual do filtro |
 | T04 | Interrupção | Saturação válida | Nenhum comando de parada adicional é enviado pelo supervisório |
 | T05 | Confirmação do operador | Clique em `OK` | Reinicia uma única leitura pelo fluxo existente |
-| T06 | Fórmula alta dose | `soma`, `fLed`, `linha_de_base`, `RCF`, `ECC`, `Fang`, `Fenerg` conhecidos | Resultado igual a `|(soma * fLed) - linha_de_base| × RCF × ECC × Fang × Fenerg` |
-| T07 | Fórmula normal após ciclo | Nova leitura sem alta dose | Fórmula original retorna sem usar `fLed` |
-| T08 | `PLed = 1` | Abrir configuração | `fLed = 100` carregado e editável |
-| T09 | `PLed = 4` | Abrir configuração | `fLed = 1` carregado e editável |
-| T10 | Edição persistente | Alterar `fLed` e reabrir | Valor alterado permanece salvo no `PLed` correspondente |
+| T06 | Fórmula alta dose | `soma`, `Fred`, `linha_de_base`, `RCF`, `ECC`, `Fang`, `Fenerg` conhecidos | Resultado igual a `|(soma * Fred) - linha_de_base| × RCF × ECC × Fang × Fenerg` |
+| T07 | Fórmula normal após ciclo | Nova leitura sem alta dose | Fórmula original retorna sem usar `Fred` |
+| T08 | `PLed = 1` | Abrir configuração | `Fred = 100` carregado e editável |
+| T09 | `PLed = 4` | Abrir configuração | `Fred = 1` carregado e editável |
+| T10 | Edição persistente | Alterar `Fred` e reabrir | Valor alterado permanece salvo no `PLed` correspondente |
 | T11 | Saturação duplicada | Enviar a mesma string várias vezes | Um popup, uma configuração e um reinício |
 | T12 | Pacote incompleto | String sem `&` | Não disparar o evento de saturação |
 | T13 | Indicador alternativo `V` | `#L1%VsatLeit&` | Não abrir popup nem enviar configuração de alta dose |
@@ -430,7 +430,7 @@ Não executar portas seriais durante a criação deste documento. A validação 
 | T17 | Falha na transmissão | Simular desconexão da porta | Não abrir popup como se o envio tivesse sido confirmado; informar erro |
 | T18 | Falha no reinício | Não responder ao comando de início | Informar timeout e impedir cálculo como se a leitura tivesse reiniciado |
 | T19 | Nova saturação após reinício | `#L1%AsatLeit&` durante `LEITURA_ALTA_DOSE` | Encerrar com erro por saturação persistente, sem novo ciclo automático |
-| T20 | Soma abaixo da linha de base | `soma * fLed < linha_de_base` | Aplicar o valor absoluto e manter a dose não negativa |
+| T20 | Soma abaixo da linha de base | `soma * Fred < linha_de_base` | Aplicar o valor absoluto e manter a dose não negativa |
 | T21 | P2/P3 sem calibração | Selecionar fator indefinido | Bloquear o cálculo que o utilizaria e informar a necessidade de calibração |
 | T22 | Formatação da dose | Dose igual a `0` e dose diferente de `0` | Exibir `0` somente no zero real; demais valores com três casas decimais |
 | T23 | Detalhes por duplo clique | Duplo clique no valor do painel `Dose (mSv)` | Abrir popup com fórmula usada e todos os valores aplicados |
@@ -440,7 +440,7 @@ Não executar portas seriais durante a criação deste documento. A validação 
 Para cada cenário, guardar:
 
 - log bruto de `COM5` e `COM6`;
-- configuração ativa (`PLed`, `fLed`, `RCF`, `ECC`);
+- configuração ativa (`PLed`, `Fred`, `RCF`, `ECC`);
 - sequência temporal `saturação -> configuração -> popup -> OK -> início`;
 - valores usados na fórmula;
 - resultado apresentado ao operador;
@@ -453,8 +453,8 @@ Para cada cenário, guardar:
 - O popup não aparece para leituras normais.
 - Um evento de saturação não gera mais de um popup ou mais de um reinício.
 - O botão `OK` reinicia a leitura somente após o operador confirmar o ajuste manual do filtro.
-- `fLed = 100` é carregado para `PLed = 1` e `fLed = 1` para `PLed = 4`.
-- `fLed` pode ser editado e permanece salvo.
+- `Fred = 100` é carregado para `PLed = 1` e `Fred = 1` para `PLed = 4`.
+- `Fred` pode ser editado e permanece salvo.
 - A fórmula de alta dose é aplicada somente ao ciclo de alta dose.
 - A fórmula normal permanece inalterada nos demais ciclos.
 - A fórmula de alta dose usa o valor absoluto da diferença; uma soma abaixo da
@@ -463,7 +463,7 @@ Para cada cenário, guardar:
   realmente zero, que aparece como `0`.
 - O duplo clique no valor da dose abre o detalhamento da fórmula e dos valores
   usados em cada variável, sem depender dos campos atualmente editados.
-- Cada medição de alta dose registra o modo e o `fLed` no campo `notes` já
+- Cada medição de alta dose registra o modo e o `Fred` no campo `notes` já
   existente, sem criar colunas ou migrar o SQLite.
 - Falha de transmissão ou timeout de reinício não abre uma falsa confirmação e
   não calcula uma dose como se a leitura tivesse sido concluída.
