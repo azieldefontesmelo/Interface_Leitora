@@ -2659,6 +2659,10 @@ class TelaPrincipalLeitora(Screen):
 
         self._cancelar_watchdogs_serial()
         self.acquisition_active = False
+        # A saturação invalida toda a tentativa anterior. Limpe o acumulador
+        # e o arquivo imediatamente, para que nem uma interrupção enquanto o
+        # operador ajusta o filtro consiga salvar os dados pré-saturação.
+        self._reinicializar_tentativa_alta_dose()
         self._definir_estado_alta_dose(ESTADO_ALTA_DOSE_ENVIANDO_CONFIG)
         try:
             fled = self.obter_fled("1")
@@ -2678,6 +2682,8 @@ class TelaPrincipalLeitora(Screen):
         self._abrir_popup_alta_dose()
 
     def _reinicializar_tentativa_alta_dose(self):
+        """Descarta a tentativa anterior e prepara uma leitura limpa."""
+
         self.soma = 0
         self.soma_luz = 0
         self.contador = 0.1

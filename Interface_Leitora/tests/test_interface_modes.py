@@ -177,6 +177,42 @@ class InterfaceModeTestCase(unittest.TestCase):
         self.assertEqual(self.main.high_dose_state, interface_OSL.ESTADO_LEITURA_NORMAL)
         self.assertGreaterEqual(serial_port.flush_count, 3)
 
+    def test_high_dose_discards_samples_received_before_saturation(self):
+        serial_port = FakeSerial()
+        self.main.serial_connection = serial_port
+        self.main.ids.nome_arquivo_input.text = "high-dose-discards-old-data.txt"
+        self.main.ids.branco_textInput.text = "0"
+        self.main.ids.rcf_textInput.text = "1"
+        self.main.ids.ecc_textInput.text = "1"
+        self.main.ids.fcal_textInput.text = "1"
+        self.main.ids.fenerg_textInput.text = "1"
+
+        self.main.botao_leitura()
+        measurement_id = self.main.current_measurement_id
+        self.main.processar_frame("#L1%A100&")
+        self.main.processar_frame("#L1%E45&")
+        self.main.processar_frame("#L1%D471&")
+        self.assertEqual(self.main.soma, 100)
+        caminho = Path(self.main.caminho_arquivo)
+        self.assertIn("100", caminho.read_text(encoding="utf-8"))
+
+        self.main.processar_frame(interface_OSL.FRAME_ALTA_DOSE)
+
+        self.assertEqual(self.main.soma, 0)
+        self.assertNotIn("100;45;471", caminho.read_text(encoding="utf-8"))
+        self.assertEqual(self.main.high_dose_state, interface_OSL.ESTADO_ALTA_DOSE_AGUARDANDO_FILTRO)
+
+        self.assertTrue(self.main._confirmar_filtro_alta_dose())
+        self.main.processar_frame("#L1%A2&")
+        self.main.processar_frame("#L1%E45&")
+        self.main.f_fechar_log = True
+        self.main.processar_frame("#L1%D471&")
+
+        measurement = self.database.get_measurement(measurement_id)
+        self.assertEqual(measurement["raw_signal"], 2)
+        self.assertEqual(measurement["count_01s"], 2)
+        self.assertNotIn("100;45;471", caminho.read_text(encoding="utf-8"))
+
     def test_high_dose_tx_failure_does_not_open_confirmation(self):
         serial_port = FakeSerial()
         self.main.serial_connection = serial_port
