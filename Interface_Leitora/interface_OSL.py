@@ -123,7 +123,7 @@ COMANDOS_SUDO = {
 COMANDO_PARAMETROS_PADRAO = "#S1%M1G4L03000P4Z05000Q4&"
 COMANDO_INICIAL = COMANDO_PARAMETROS_PADRAO
 FRAME_ALTA_DOSE = "#L1%AsatLeit&"
-COMANDO_CONFIG_ALTA_DOSE = "#S1%M1G3L03000P1Z01000Q4&"
+COMANDO_CONFIG_ALTA_DOSE = "#S1%M1G4L60000P1Z01000Q4&"
 # Catalogo de strings do firmware usado pelo console de manutencao. Os
 # comandos de telemetria nao ficam nesta lista porque sao respostas do Mega;
 # eles sao classificados automaticamente na analise RX.
