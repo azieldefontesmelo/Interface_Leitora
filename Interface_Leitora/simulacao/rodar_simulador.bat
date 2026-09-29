@@ -9,7 +9,7 @@ if exist ".venv\Scripts\python.exe" (
     set "PYTHON=python"
 )
 
-echo Iniciando o Simulador OSL na COM6...
+echo Iniciando o Simulador OSL...
 "%PYTHON%" "simulacao\simulador_osl.py"
 
 if errorlevel 1 (

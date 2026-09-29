@@ -1,7 +1,8 @@
 # Simulador OSL
 
-O simulador usa exclusivamente a porta serial virtual `COM6` e fala o mesmo
-protocolo usado pela leitora. Com o par `COM5 <-> COM6`, a interface principal
+O simulador fala o mesmo protocolo usado pela leitora. Selecione a porta serial
+na lista da janela e clique em **Conectar**. Use na interface principal a outra
+ponta do par virtual; por exemplo, se o simulador estiver na `COM6`, a interface
 deve abrir a `COM5`.
 
 ## Uso
@@ -16,5 +17,5 @@ leitura é obtido do parâmetro `L` recebido na string de configuração, como
 `L03000` (3 segundos). Ao terminar, o simulador apaga o LED, para a geração
 de amostras e envia `#L1%I0000101&` (fim da leitura).
 
-Se as portas tiverem outros números, altere `PORTA_SERIAL` no início do
-`simulador_osl.py` para a segunda porta do par.
+Use **Atualizar** para reler as portas disponíveis depois de criar ou conectar
+um par virtual.

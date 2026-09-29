@@ -262,7 +262,9 @@ class GraficoTempoReal(Widget):
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
-        self.amostras = deque(maxlen=240)
+        # Mantém todas as amostras da aquisição atual. Um limite fixo aqui
+        # fazia leituras longas perderem o início do gráfico.
+        self.amostras = deque()
         self.intervalo_amostra = 0.1
         self.tempo_grafico = 0.0
         self.series_ativas = {
@@ -3253,9 +3255,6 @@ class TelaPrincipalLeitora(Screen):
         if self.nova_linha:
             self.salvar_log(f"{self.contador:.1f};")
 
-            if self.contador > int(self.tempo_leitura)/1000:
-                self.f_fechar_log = True
-
             self.contador += 0.1
 
             self.nova_linha = False
@@ -3393,7 +3392,8 @@ class TelaPrincipalLeitora(Screen):
                 f"Z{tempo_zeramento.zfill(5)}"
                 f"Q{potencia_zeramento}&"
             )
-            self._respondeu_solicitacao_parametros = False
+            # O quadro #L1%I0000000 enviado pelo simulador confirma este
+            # comando; não deve ser tratado como novo pedido pelos padrões.
             self.enviar_serial(comando)
             lbl_erro.text = "Parameters Updated!"
             popupNomeArquivo.open()

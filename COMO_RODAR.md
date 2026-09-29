@@ -169,8 +169,8 @@ Depois, na interface:
 2. clique em **Connect**;
 3. inicie a aquisição.
 
-Se o par usar outros números, altere `PORTA_SERIAL` no início de
-`simulacao/simulador_osl.py`.
+Se o par virtual for criado depois de abrir o simulador, clique em **Atualizar**
+para carregar as portas disponíveis.
 
 No Linux, o simulador também depende do suporte Tk do sistema. Em distribuições
 baseadas em Debian/Ubuntu, ele costuma ser fornecido pelo pacote `python3-tk`.

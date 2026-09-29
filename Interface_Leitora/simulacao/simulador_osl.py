@@ -1,16 +1,17 @@
-"""Simulador da leitora OSL usando a porta virtual COM6."""
+"""Simulador da leitora OSL usando uma porta serial selecionável."""
 
 import random
 import re
 import threading
 import time
 import tkinter as tk
-from tkinter import messagebox
+from tkinter import ttk
 
 import serial
+from serial.tools import list_ports
 
 
-PORTA_SERIAL = "COM6"
+PORTA_PADRAO = "COM6"
 BAUD_RATE = 115200
 
 
@@ -18,21 +19,45 @@ class SimuladorOSL:
     def __init__(self, root):
         self.root = root
         self.root.title("Simulador OSL")
-        self.root.geometry("430x410")
+        self.root.geometry("430x450")
         self.root.resizable(False, False)
         self.serial_connection = None
+        self.porta_serial = tk.StringVar(value=PORTA_PADRAO)
         self.rodando = False
         self.contador = 0
         self.potencia = 4
         self.tempo_leitura_ms = 3000
         self._inicio_leitura = None
         self._montar_tela()
+        self.atualizar_portas()
         self._conectar_serial()
 
     def _montar_tela(self):
         tk.Label(self.root, text="Simulador da Máquina OSL", font=("Arial", 16, "bold")).pack(pady=10)
-        self.status = tk.StringVar(value=f"Conectando em {PORTA_SERIAL}...")
+        self.status = tk.StringVar(value="Selecione uma porta serial.")
         tk.Label(self.root, textvariable=self.status, fg="#205493").pack()
+
+        seletor = tk.Frame(self.root)
+        seletor.pack(pady=(8, 2))
+        tk.Label(seletor, text="Porta COM:").grid(row=0, column=0, padx=4)
+        self.porta_combo = ttk.Combobox(
+            seletor,
+            textvariable=self.porta_serial,
+            state="readonly",
+            width=12,
+        )
+        self.porta_combo.grid(row=0, column=1, padx=4)
+        tk.Button(
+            seletor,
+            text="Atualizar",
+            command=self.atualizar_portas,
+        ).grid(row=0, column=2, padx=4)
+        tk.Button(
+            seletor,
+            text="Conectar",
+            command=self._conectar_serial,
+        ).grid(row=0, column=3, padx=4)
+
         self.canvas = tk.Canvas(self.root, width=130, height=130, bg="#202020", highlightthickness=0)
         self.canvas.pack(pady=10)
         self.led = self.canvas.create_oval(25, 25, 105, 105, fill="#303030", outline="#888", width=3)
@@ -51,20 +76,59 @@ class SimuladorOSL:
             command=self.simular_alta_dose,
         ).grid(row=2, column=0, columnspan=2, padx=4, pady=4)
 
-    def _conectar_serial(self):
-        try:
-            self.serial_connection = serial.Serial(PORTA_SERIAL, BAUD_RATE, timeout=0.1)
-            self.status.set(f"Conectado em {PORTA_SERIAL}; use a outra porta na interface.")
-            threading.Thread(target=self._ler_serial, daemon=True).start()
-        except (serial.SerialException, OSError) as erro:
-            self.status.set(f"Erro ao abrir {PORTA_SERIAL}")
-            messagebox.showerror("Simulador OSL", f"Não foi possível abrir {PORTA_SERIAL}:\n{erro}")
+    def atualizar_portas(self):
+        """Atualiza as portas COM detectadas e preserva a seleção atual."""
+        def chave_porta(porta):
+            numero = re.fullmatch(r"COM(\d+)", porta, re.IGNORECASE)
+            return (0, int(numero.group(1))) if numero else (1, porta.upper())
 
-    def _ler_serial(self):
+        portas = sorted(
+            (porta.device for porta in list_ports.comports()),
+            key=chave_porta,
+        )
+        self.porta_combo["values"] = portas
+        selecionada = self.porta_serial.get()
+        if selecionada not in portas:
+            self.porta_serial.set(
+                PORTA_PADRAO if PORTA_PADRAO in portas else (portas[0] if portas else "")
+            )
+        if not portas:
+            self.status.set("Nenhuma porta serial encontrada.")
+        elif not self.serial_connection or not self.serial_connection.is_open:
+            self.status.set("Selecione uma porta e clique em Conectar.")
+
+    def _conectar_serial(self):
+        if self.rodando:
+            self.status.set("Pare a leitura antes de trocar a porta serial.")
+            return
+
+        porta = self.porta_serial.get().strip()
+        if not porta:
+            self.status.set("Selecione uma porta COM disponível.")
+            return
+
+        conexao_anterior = self.serial_connection
+        self.serial_connection = None
+        if conexao_anterior and conexao_anterior.is_open:
+            conexao_anterior.close()
+
+        try:
+            conexao = serial.Serial(porta, BAUD_RATE, timeout=0.1)
+            self.serial_connection = conexao
+            self.status.set(f"Conectado em {porta}; use a outra porta na interface.")
+            threading.Thread(
+                target=self._ler_serial,
+                args=(conexao,),
+                daemon=True,
+            ).start()
+        except (serial.SerialException, OSError) as erro:
+            self.status.set(f"Erro ao abrir {porta}: {erro}")
+
+    def _ler_serial(self, conexao):
         buffer = ""
-        while self.serial_connection and self.serial_connection.is_open:
+        while self.serial_connection is conexao and conexao.is_open:
             try:
-                dados = self.serial_connection.read(self.serial_connection.in_waiting or 1)
+                dados = conexao.read(conexao.in_waiting or 1)
                 if not dados:
                     continue
                 buffer += dados.decode("ascii", errors="ignore")
@@ -105,7 +169,7 @@ class SimuladorOSL:
 
     def iniciar_leitura(self):
         if not self.serial_connection or not self.serial_connection.is_open:
-            self.status.set(f"{PORTA_SERIAL} não está conectada")
+            self.status.set(f"{self.porta_serial.get()} não está conectada")
             return
         if not self.rodando:
             self.rodando = True
@@ -163,7 +227,7 @@ class SimuladorOSL:
     def simular_alta_dose(self):
         """Stop the acquisition and emit the one accepted saturation frame."""
         if not self.serial_connection or not self.serial_connection.is_open:
-            self.status.set(f"{PORTA_SERIAL} não está conectada")
+            self.status.set(f"{self.porta_serial.get()} não está conectada")
             return
         self.rodando = False
         self._inicio_leitura = None
