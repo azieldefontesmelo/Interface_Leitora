@@ -213,12 +213,13 @@ Entre os dados gravados estão:
 
 Guarda o resultado consolidado da sessão de Integral da Área. O registro só é
 criado quando existem aquisições `CONCLUIDO` para HP10 e HP007 na mesma sessão.
-Mantém os dois valores, os IDs das duas medições e calcula o status da dose:
-`Need to Erase` para valores menores que 0,01 mSv, `Ready to Use` entre 0,01
-e 2 mSv, e `Need to Re-read` para valores maiores ou iguais a 2 mSv. Para
-doses abaixo de 0,01 mSv, a interface pergunta se a leitura deve ser salva
-como linha de base usando as contagens; para doses a partir de 2 mSv, alerta
-que a leitura deve ser refeita.
+Mantém os dois valores, os IDs das duas medições e calcula o status do par
+Hp(10)/Hp(0,07) avaliando cada grandeza: `Need to Erase` se alguma dose for
+menor que 0,01 mSv, `Ready to Use` quando ambas estiverem entre 0,01 e 2 mSv,
+e `Need to Re-read` se alguma dose for maior ou igual a 2 mSv (prioridade para
+o aviso de releitura). Para doses abaixo de 0,01 mSv, a interface pergunta se
+a leitura deve ser salva como linha de base usando as contagens; para doses a
+partir de 2 mSv, alerta que a leitura deve ser refeita.
 
 ### Modo Ref Light
 

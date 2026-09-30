@@ -895,6 +895,24 @@ class DatabaseTestCase(unittest.TestCase):
                 expected_status,
             )
 
+    def test_personal_dose_status_considers_each_channel(self):
+        self.register_valid_records()
+        cases = (
+            (0.05, 0.009999, PERSONAL_DOSE_STATUS),
+            (0.009999, 0.05, PERSONAL_DOSE_STATUS),
+            (0.05, 2, NEED_RE_READ_STATUS),
+        )
+        for hp10, hp007, expected_status in cases:
+            record_id = self.database.add_personal_dose(
+                "0123456789",
+                hp10_dos=hp10,
+                hp007_dos=hp007,
+            )
+            self.assertEqual(
+                self.database.get_personal_dose(record_id)["status_dos"],
+                expected_status,
+            )
+
     def test_version_one_database_is_upgraded_without_losing_measurements(self):
         self.register_valid_records()
         measurement_id = self.add_valid_measurement()

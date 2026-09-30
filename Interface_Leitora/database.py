@@ -486,12 +486,17 @@ class Database:
     def _refresh_personal_dose_statuses(
         connection: sqlite3.Connection,
     ) -> None:
-        """Keep the persisted personal-dose tag derived from the dose value."""
+        """Keep the persisted tag derived from both dose channels."""
         connection.execute(
             """
             UPDATE historico_dose
             SET status_dos = CASE
-                WHEN dose_dos < 0.01 THEN 'Need to Erase'
+                WHEN COALESCE(hp10_dos, dose_dos) >= 2
+                  OR COALESCE(hp007_dos, dose_dos) >= 2
+                    THEN 'Need to Re-read'
+                WHEN COALESCE(hp10_dos, dose_dos) < 0.01
+                  OR COALESCE(hp007_dos, dose_dos) < 0.01
+                    THEN 'Need to Erase'
                 WHEN dose_dos < 2 THEN 'Ready to Use'
                 ELSE 'Need to Re-read'
             END
@@ -564,7 +569,12 @@ class Database:
                            time_dos, dosimeter_id, hp10_dos, hp007_dos,
                            dose_dos,
                            CASE
-                               WHEN dose_dos < 0.01 THEN 'Need to Erase'
+                               WHEN COALESCE(hp10_dos, dose_dos) >= 2
+                                 OR COALESCE(hp007_dos, dose_dos) >= 2
+                                   THEN 'Need to Re-read'
+                               WHEN COALESCE(hp10_dos, dose_dos) < 0.01
+                                 OR COALESCE(hp007_dos, dose_dos) < 0.01
+                                   THEN 'Need to Erase'
                                WHEN dose_dos < 2 THEN 'Ready to Use'
                                ELSE 'Need to Re-read'
                            END,
@@ -590,16 +600,18 @@ class Database:
                 connection.execute("PRAGMA foreign_keys = ON")
 
     @staticmethod
-    def _personal_dose_status(dose: float) -> str:
-        """Return the English tag for a personal dose reading."""
-        value = float(dose)
-        if not math.isfinite(value) or value < 0:
+    def _personal_dose_status(*doses: float) -> str:
+        """Classify the pair, applying the limits to each dose channel."""
+        if not doses:
+            raise ValueError("Informe ao menos uma dose")
+        values = tuple(float(dose) for dose in doses)
+        if any(not math.isfinite(value) or value < 0 for value in values):
             raise ValueError("A dose deve ser um número finito não negativo")
-        if value < 0.01:
+        if any(value >= 2 for value in values):
+            return NEED_RE_READ_STATUS
+        if any(value < 0.01 for value in values):
             return PERSONAL_DOSE_STATUS
-        if value < 2:
-            return READY_FOR_USE_STATUS
-        return NEED_RE_READ_STATUS
+        return READY_FOR_USE_STATUS
 
     @staticmethod
     def _migrate_legacy_history_duplicates(
@@ -2456,7 +2468,10 @@ class Database:
                         hp10["dose_msv"],
                         hp007["dose_msv"],
                         aggregate_dose,
-                        self._personal_dose_status(aggregate_dose),
+                        self._personal_dose_status(
+                            float(hp10["dose_msv"]),
+                            float(hp007["dose_msv"]),
+                        ),
                         utc_now(),
                     ),
                 )
@@ -2560,7 +2575,7 @@ class Database:
         hp10 = _non_negative_number(hp10_dos, "Hp(10)")
         hp007 = _non_negative_number(hp007_dos, "Hp(0,07)")
         aggregate_dose = max(hp10, hp007)
-        expected_status = self._personal_dose_status(aggregate_dose)
+        expected_status = self._personal_dose_status(hp10, hp007)
         if status_dos is None:
             clean_status = expected_status
         else:
