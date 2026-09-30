@@ -123,7 +123,7 @@ COMANDOS_SUDO = {
 COMANDO_PARAMETROS_PADRAO = "#S1%M1G4L03000P4Z05000Q4&"
 COMANDO_INICIAL = COMANDO_PARAMETROS_PADRAO
 FRAME_ALTA_DOSE = "#L1%AsatLeit&"
-COMANDO_CONFIG_ALTA_DOSE = "#S1%M1G4L60000P1Z01000Q4&"
+COMANDO_CONFIG_ALTA_DOSE = "#S1%M1G4L60000P2Z01000Q4&"
 # Catalogo de strings do firmware usado pelo console de manutencao. Os
 # comandos de telemetria nao ficam nesta lista porque sao respostas do Mega;
 # eles sao classificados automaticamente na analise RX.
@@ -3601,12 +3601,61 @@ class TelaConsoleSerial(Screen):
         if frame.startswith("#C1"):
             return "Comando do motor"
         if frame.startswith("#S1"):
-            return "Comando do supervisório"
+            return TelaConsoleSerial._descrever_comando_supervisorio(frame)
         if frame in ("start&", "stop&"):
             return "Contador"
         if str(direcao).upper() == "TX":
             return "Comando manual"
         return "Evento do sistema"
+
+    @staticmethod
+    def _descrever_comando_supervisorio(frame):
+        """Descreve a acao dos comandos S1 conhecidos e os parametros enviados."""
+        comandos_diretos = {
+            "#S1%SC1001&": "Inicia leitura direta, sem acionar a mec\u00e2nica",
+            "#S1%SC1010&": "Para a leitura e desliga o LED",
+            "#S1%SC1011&": "Liga o LED de zeramento",
+            "#S1%SC1100&": "Liga o LED de leitura",
+            "#S1%C0000&": "Coloca o equipamento em espera",
+            "#S1%C0001&": "Inicia o processo autom\u00e1tico",
+            "#S1%C0010&": "Para o processo",
+            "#S1%C0011&": "Executa o autoteste",
+            "#S1%C0100&": "Descarta o dos\u00edmetro aprovado",
+            "#S1%C0101&": "Descarta o dos\u00edmetro n\u00e3o aprovado",
+            "#S1%C0110&": "Confirma a leitura do c\u00f3digo de barras",
+            "#S1%C0111&": "Solicita a leitura do dos\u00edmetro",
+            "#S1%C1000&": "Solicita o zeramento do dos\u00edmetro",
+            "#S1%C1001&": "Habilita o equipamento ou bot\u00e3o de in\u00edcio",
+            "#S1%C1010&": "Desabilita o equipamento ou bot\u00e3o de in\u00edcio",
+            "#S1%C1011&": "Inicia o modo de zeramento",
+        }
+        if frame in comandos_diretos:
+            return comandos_diretos[frame]
+
+        parametros = re.fullmatch(
+            r"#S1%M(\d)G(\d)L(\d{5})P(\d)Z(\d{5})Q(\d)&",
+            frame,
+        )
+        if parametros:
+            modo, ganho, leitura_ms, led_leitura, zeramento_ms, led_zeramento = (
+                parametros.groups()
+            )
+
+            def duracao(ms):
+                segundos = int(ms) / 1000
+                return f"{segundos:g} s".replace(".", ",")
+
+            def potencia(nivel):
+                porcentagens = {"1": "25%", "2": "50%", "3": "75%", "4": "100%"}
+                return porcentagens.get(nivel, f"n\u00edvel {nivel}")
+
+            return (
+                f"Configura aquisicao: leitura {duracao(leitura_ms)}, ganho PMT G{ganho}, "
+                f"LED de leitura {potencia(led_leitura)}; zeramento "
+                f"{duracao(zeramento_ms)}, LED {potencia(led_zeramento)}, modo M{modo}"
+            )
+
+        return "Comando S1 sem descri\u00e7\u00e3o cadastrada"
 
     @staticmethod
     def _cor_evento(categoria):

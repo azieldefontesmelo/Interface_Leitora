@@ -71,7 +71,7 @@ class SimuladorOSL:
         tk.Button(botoes, text="Ligar LED", width=16, command=self.ligar_led).grid(row=1, column=1, padx=4, pady=4)
         tk.Button(
             botoes,
-            text="Simular alta dose",
+            text="Enviar satura\u00e7\u00e3o",
             width=34,
             command=self.simular_alta_dose,
         ).grid(row=2, column=0, columnspan=2, padx=4, pady=4)
