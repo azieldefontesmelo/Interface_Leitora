@@ -123,7 +123,7 @@ COMANDOS_SUDO = {
 COMANDO_PARAMETROS_PADRAO = "#S1%M1G4L03000P4Z05000Q4&"
 COMANDO_INICIAL = COMANDO_PARAMETROS_PADRAO
 FRAME_ALTA_DOSE = "#L1%AsatLeit&"
-COMANDO_CONFIG_ALTA_DOSE = "#S1%M1G4L60000P2Z01000Q4&"
+COMANDO_CONFIG_ALTA_DOSE = "#S1%M1G4L030000P2Z01000Q4&"
 # Catalogo de strings do firmware usado pelo console de manutencao. Os
 # comandos de telemetria nao ficam nesta lista porque sao respostas do Mega;
 # eles sao classificados automaticamente na analise RX.
@@ -2667,7 +2667,13 @@ class TelaPrincipalLeitora(Screen):
         self._reinicializar_tentativa_alta_dose()
         self._definir_estado_alta_dose(ESTADO_ALTA_DOSE_ENVIANDO_CONFIG)
         try:
-            fled = self.obter_fled("1")
+            config_alta_dose = PADRAO_PARAMETROS_RE.fullmatch(
+                COMANDO_CONFIG_ALTA_DOSE
+            )
+            if config_alta_dose is None:
+                raise ValueError("Comando de configura\u00e7\u00e3o de alta dose inv\u00e1lido")
+            potencia_led = config_alta_dose.group("potencia")
+            fled = self.obter_fled(potencia_led)
             self.applied_parameters["high_dose"] = True
             self.applied_parameters["fled"] = fled
         except (AttributeError, TypeError, ValueError) as error:
@@ -2677,7 +2683,10 @@ class TelaPrincipalLeitora(Screen):
         if not self.enviar_serial(COMANDO_CONFIG_ALTA_DOSE, finalizar_em_erro=False):
             self.fechar_log(
                 status="ERRO",
-                notes="ERRO TX ao enviar configuração P1 de alta dose",
+                notes=(
+                    f"ERRO TX ao enviar configura\u00e7\u00e3o P{potencia_led} "
+                    "de alta dose"
+                ),
             )
             return
         self._definir_estado_alta_dose(ESTADO_ALTA_DOSE_AGUARDANDO_FILTRO)
