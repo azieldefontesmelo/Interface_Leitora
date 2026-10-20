@@ -123,7 +123,7 @@ COMANDOS_SUDO = {
 COMANDO_PARAMETROS_PADRAO = "#S1%M1G4L03000P4Z05000Q4&"
 COMANDO_INICIAL = COMANDO_PARAMETROS_PADRAO
 FRAME_ALTA_DOSE = "#L1%AsatLeit&"
-COMANDO_CONFIG_ALTA_DOSE = "#S1%M1G4L600000P2Z01000Q4&"
+COMANDO_CONFIG_ALTA_DOSE = "#S1%M1G4L03000P4Z01000Q4&"
 # Catalogo de strings do firmware usado pelo console de manutencao. Os
 # comandos de telemetria nao ficam nesta lista porque sao respostas do Mega;
 # eles sao classificados automaticamente na analise RX.
@@ -1913,7 +1913,7 @@ class TelaPrincipalLeitora(Screen):
             )
             net_signal = (float(self.soma) * fled) - float(context["baseline"])
             formula = (
-                "|(soma × Fred) − linha_de_base| × RCF × ECC × Fang × Fenerg"
+                "((soma × Fred) − linha_de_base) × RCF × ECC × Fang × Fenerg"
             )
         else:
             result = calculate_dose(
@@ -1925,7 +1925,7 @@ class TelaPrincipalLeitora(Screen):
                 fenerg=context["fenerg"],
             )
             net_signal = float(self.soma) - float(context["baseline"])
-            formula = "|soma − linha_de_base| × RCF × ECC × Fang × Fenerg"
+            formula = "(soma − linha_de_base) × RCF × ECC × Fang × Fenerg"
         self.last_dose_details = {
             "mode": "Alta dose" if high_dose else "Normal",
             "formula": formula,
@@ -1937,7 +1937,7 @@ class TelaPrincipalLeitora(Screen):
             "fang": float(context["fang"]),
             "fenerg": float(context["fenerg"]),
             "net_signal": net_signal,
-            "absolute_signal": abs(net_signal),
+            "absolute_signal": (net_signal)*(net_signal>0),
             "dose": float(result),
         }
         return result
